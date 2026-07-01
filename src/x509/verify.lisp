@@ -13,7 +13,11 @@
 (defun verify-hostname (cert hostname)
   "Verify that HOSTNAME matches the certificate.
    Supports both DNS hostnames and IP address literals.
-   Returns T if verification succeeds, signals TLS-VERIFICATION-ERROR otherwise."
+   Returns T if verification succeeds, signals TLS-VERIFICATION-ERROR otherwise.
+
+   Strict Privacy profile (RFC 8310 section 8.1): an identity is trusted only
+   through the certificate's subjectAltName.  The Subject Common Name is never
+   consulted, and a certificate carrying no subjectAltName is rejected outright."
   ;; Check if hostname is an IP address literal
   (let ((ip-bytes (parse-ip-address hostname)))
     (when ip-bytes
@@ -25,34 +29,23 @@
                    :hostname hostname
                    :message "IP address does not match any IP SAN entry")))))
 
-  ;; DNS hostname - check Subject Alternative Name extension first
+  ;; DNS hostname - trust is established solely through the SAN extension.
+  ;; A certificate with no SAN has no acceptable identity: the Common Name
+  ;; MUST NOT be inspected (RFC 8310 section 8.1), so such a certificate is
+  ;; rejected rather than falling back to CN matching.
   (let ((san-names (certificate-dns-names cert))
         (san-ips (certificate-ip-addresses cert)))
-    (when (or san-names san-ips)
-      ;; If SAN is present, only use SAN (ignore CN per RFC 6125)
-      (if (some (lambda (san-name)
-                  (hostname-matches-p san-name hostname))
-                san-names)
-          (return-from verify-hostname t)
-          (error 'tls-verification-error
-                 :hostname hostname
-                 :message "Hostname does not match any SAN entry"))))
-
-  ;; Fall back to Common Name if no SAN (deprecated but still supported)
-  (let ((cns (certificate-subject-common-names cert)))
-    (when cns
-      (if (some (lambda (cn)
-                  (hostname-matches-p cn hostname))
-                cns)
-          (return-from verify-hostname t)
-          (error 'tls-verification-error
-                 :hostname hostname
-                 :message "Hostname does not match certificate CN"))))
-
-  ;; No SAN or CN to check
-  (error 'tls-verification-error
-         :hostname hostname
-         :message "Certificate has no DNS names to verify"))
+    (unless (or san-names san-ips)
+      (error 'tls-verification-error
+             :hostname hostname
+             :message "Certificate has no subjectAltName; CN identity is not accepted for Strict Privacy"))
+    (if (some (lambda (san-name)
+                (hostname-matches-p san-name hostname))
+              san-names)
+        (return-from verify-hostname t)
+        (error 'tls-verification-error
+               :hostname hostname
+               :message "Hostname does not match any SAN entry"))))
 
 ;;;; IP Address Parsing
 

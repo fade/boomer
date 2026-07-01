@@ -333,6 +333,35 @@
                                             now nil :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
+;;;; Finding: RFC 5280 4.2.1.3 -- an issuer whose KeyUsage extension is present
+;;;; but omits keyCertSign must not be accepted as a signing CA, even when its
+;;;; BasicConstraints assert cA=TRUE.  keyCertSign is the specific bit that
+;;;; authorizes certificate signing; a CA scoped to (say) CRL signing only must
+;;;; not be able to mint end-entity certificates.
+;;;;
+;;;; The fixture is arranged so that keyCertSign is the OPERATIVE rejection:
+;;;; the issuer is cA=TRUE (CA check passes), the leaf's issuer name matches
+;;;; (issued-by passes), and both certs are always-valid (date checks pass), so
+;;;; the only failing check is the missing keyCertSign key usage.
+;;;; ---------------------------------------------------------------------------
+
+(test chain-rejects-keycertsign-absent-issuer
+  "An issuer with KeyUsage present but lacking keyCertSign must be rejected as a
+   signing CA, even with BasicConstraints cA=TRUE."
+  (let ((pure-tls:*use-windows-certificate-store* nil)
+        (pure-tls:*use-macos-keychain* nil)
+        (now (get-universal-time)))
+    (let ((leaf (%chain-cert "leaf.example" "Issuing CA"
+                             :basic-constraints :absent))
+          ;; cA=TRUE, but KeyUsage is present WITHOUT :key-cert-sign.
+          (issuer (%chain-cert "Issuing CA" "Root CA"
+                               :basic-constraints :ca-true
+                               :key-usage '(:crl-sign))))
+      (signals pure-tls:tls-certificate-error
+        (pure-tls::verify-certificate-chain (list leaf issuer) (list issuer)
+                                            now nil :trust-anchor-mode :replace)))))
+
+;;;; ---------------------------------------------------------------------------
 ;;;; Finding: wildcard SAN enforcement under Strict Privacy (RFC 8310 8.1).
 ;;;;
 ;;;; verify-hostname must fail closed on EVERY wildcard ("*.") SAN -- including

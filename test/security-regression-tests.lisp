@@ -332,25 +332,64 @@
         (pure-tls::verify-certificate-chain (list leaf root) (list root)
                                             now nil :trust-anchor-mode :replace)))))
 
-(test wildcard-positive-and-structural-negatives
-  "Wildcard SAN matching (structurally decidable cases): a left-most-label
-   wildcard matches one label, and is rejected against a bare parent, a
-   multi-label prefix, and a wildcard spanning a public suffix."
-  ;; Positive: the wildcard covers exactly the left-most label.
-  (is (pure-tls:verify-hostname (%san-cert "*.example.com") "foo.example.com")
-      "*.example.com must match foo.example.com")
-  ;; Negative: bare parent domain -- no label for the wildcard to cover.
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: wildcard SAN enforcement under Strict Privacy (RFC 8310 8.1).
+;;;;
+;;;; verify-hostname must fail closed on EVERY wildcard ("*.") SAN -- including
+;;;; a pattern the general RFC-6125 matcher would structurally cover -- so a
+;;;; wildcard-only certificate can never fail open on the strict path.  The two
+;;;; guards below prove both halves of that invariant:
+;;;;
+;;;;   Guard 1 (verify-hostname-rejects-every-wildcard-san): the strict
+;;;;     enforcement layer rejects every wildcard SAN, while an exact SAN still
+;;;;     matches.
+;;;;   Guard 2 (wildcard-general-matcher-structural-cases): the general matcher
+;;;;     (hostname-matches-p / wildcard-hostname-matches-p) is byte-for-byte
+;;;;     unchanged -- its structural positive still matches -- proving the
+;;;;     enforcement change touched only the strict layer, not the matcher.
+;;;; ---------------------------------------------------------------------------
+
+(test verify-hostname-rejects-every-wildcard-san
+  "Strict Privacy: verify-hostname must reject EVERY wildcard SAN regardless of
+   structure, including one the general matcher would cover; an exact SAN match
+   still succeeds."
+  ;; The case the general matcher WOULD cover -- rejected at the strict layer.
+  ;; This is the core enforcement proof (former positive, now fail-closed).
+  (signals pure-tls:tls-verification-error
+    (pure-tls:verify-hostname (%san-cert "*.example.com") "foo.example.com"))
+  ;; Structural negatives: also rejected (as before), now via the strict layer.
   (signals pure-tls:tls-verification-error
     (pure-tls:verify-hostname (%san-cert "*.example.com") "example.com"))
-  ;; Negative: a single wildcard label must not swallow two labels.
   (signals pure-tls:tls-verification-error
     (pure-tls:verify-hostname (%san-cert "*.example.com") "a.b.example.com"))
-  ;; Negative: wildcard directly over a top-level public suffix.
   (signals pure-tls:tls-verification-error
     (pure-tls:verify-hostname (%san-cert "*.com") "foo.com"))
-  ;; Negative: wildcard over a known multi-label public suffix.
   (signals pure-tls:tls-verification-error
-    (pure-tls:verify-hostname (%san-cert "*.co.uk") "foo.co.uk")))
+    (pure-tls:verify-hostname (%san-cert "*.co.uk") "foo.co.uk"))
+  ;; A wildcard directly over a public suffix must be rejected too.
+  (signals pure-tls:tls-verification-error
+    (pure-tls:verify-hostname (%san-cert "*.github.io") "www.github.io"))
+  (signals pure-tls:tls-verification-error
+    (pure-tls:verify-hostname (%san-cert "*.co.uk") "www.co.uk"))
+  ;; Exact (non-wildcard) SAN still matches -- the strict layer only excludes
+  ;; wildcard patterns, it does not break ordinary identity matching.
+  (is (pure-tls:verify-hostname (%san-cert "dns.google") "dns.google")
+      "An exact SAN must still match under Strict Privacy"))
+
+(test wildcard-general-matcher-structural-cases
+  "The general RFC-6125 wildcard matcher must stay byte-for-byte intact: its
+   structural positive still matches and its structural negatives still fail.
+   Proves Option-1 changed only the enforcement layer, not the matcher."
+  ;; POSITIVE stays green: the wildcard covers exactly the left-most label.
+  (is (pure-tls::hostname-matches-p "*.example.com" "foo.example.com"))
+  ;; Bare parent domain -- no label for the wildcard to cover.
+  (is (not (pure-tls::hostname-matches-p "*.example.com" "example.com")))
+  ;; A single wildcard label must not swallow two labels.
+  (is (not (pure-tls::hostname-matches-p "*.example.com" "a.b.example.com")))
+  ;; Wildcard directly over a top-level public suffix.
+  (is (not (pure-tls::hostname-matches-p "*.com" "foo.com")))
+  ;; Wildcard over a known multi-label public suffix.
+  (is (not (pure-tls::hostname-matches-p "*.co.uk" "foo.co.uk"))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: an unusable explicit :ca-file crashes the image instead of

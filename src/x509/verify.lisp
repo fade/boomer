@@ -32,6 +32,16 @@
                           (char= c #\-)
                           (char= c #\.))))))
 
+(defun wildcard-pattern-p (name)
+  "Return T if NAME is a wildcard DNS pattern (a leading \"*.\" label).
+   Mirrors the leading-\"*.\" test used by hostname-matches-p; kept separate so
+   the strict-privacy SAN loop can exclude wildcard patterns without touching
+   the general matcher."
+  (and (stringp name)
+       (>= (length name) 2)
+       (char= (char name 0) #\*)
+       (char= (char name 1) #\.)))
+
 (defun verify-hostname (cert hostname)
   "Verify that HOSTNAME matches the certificate.
    Supports both DNS hostnames and IP address literals.
@@ -70,9 +80,16 @@
              :hostname hostname
              :message "Certificate has no subjectAltName; CN identity is not accepted for Strict Privacy"))
     (if (some (lambda (san-name)
-                ;; A malformed SAN dNSName (embedded NUL / non-LDH byte) can
-                ;; never be the basis of a match; skip it before comparing.
+                ;; Strict Privacy (RFC 8310 section 8.1): a wildcard-only ADN
+                ;; must fail closed here, never fail open -- exclude any "*."
+                ;; pattern SAN before it can match.  A malformed SAN dNSName
+                ;; (embedded NUL / non-LDH byte) can likewise never be the
+                ;; basis of a match; skip it before comparing.  The general
+                ;; RFC 6125 wildcard matcher (hostname-matches-p /
+                ;; wildcard-hostname-matches-p, deliberately left untouched)
+                ;; plus a future public-suffix list are the non-strict path.
                 (and (valid-dns-name-p san-name)
+                     (not (wildcard-pattern-p san-name))
                      (hostname-matches-p san-name hostname)))
               san-names)
         (return-from verify-hostname t)

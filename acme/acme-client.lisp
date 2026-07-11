@@ -69,6 +69,12 @@
 ;;; HTTP Operations (client-scoped)
 ;;; ----------------------------------------------------------------------------
 
+(defvar *http-request-function* 'drakma:http-request
+  "HTTP transport used by the ACME client, called as
+   (funcall *http-request-function* url &rest drakma-args) and returning the
+   drakma:http-request values (body status headers ...).  Rebindable so tests
+   can drive the client without a live CA; production behaviour is unchanged.")
+
 (defun client-get (client url)
   "GET request to ACME endpoint."
   (let ((cl+ssl:*make-ssl-client-stream-verify-default*
@@ -76,7 +82,7 @@
               nil
               cl+ssl:*make-ssl-client-stream-verify-default*)))
     (multiple-value-bind (body status headers)
-        (drakma:http-request url :method :get)
+        (funcall *http-request-function* url :method :get)
       (let ((nonce (rest (assoc :replay-nonce headers)))
             (body-str (if (stringp body)
                           body
@@ -89,55 +95,73 @@
 
 (defun client-post (client url payload &key use-kid)
   "POST request with JWS body to ACME endpoint.
-   USE-KID: Use account URL (kid) instead of JWK in header."
-  ;; Get fresh nonce if needed
-  (unless (acme-client-nonce client)
-    (client-get client (rest (assoc :new-nonce (acme-client-directory client)))))
+   USE-KID: Use account URL (kid) instead of JWK in header.
 
-  (let* ((account-key (acme-client-account-key client))
-         (protected-header
-           (if use-kid
-               `(("alg" . "ES256")
-                 ("kid" . ,(acme-client-account-url client))
-                 ("nonce" . ,(acme-client-nonce client))
-                 ("url" . ,url))
-               `(("alg" . "ES256")
-                 ("jwk" . ,(get-public-key-jwk account-key))
-                 ("nonce" . ,(acme-client-nonce client))
-                 ("url" . ,url))))
-         (protected64 (base64url-encode
-                       (cl-json:encode-json-to-string protected-header)))
-         (payload64 (if payload
-                        (base64url-encode
-                         (cl-json:encode-json-to-string payload))
-                        ""))
-         (signature (sign-payload account-key
-                                  (format nil "~A.~A" protected64 payload64)))
-         (jws `(("protected" . ,protected64)
-                ("payload" . ,payload64)
-                ("signature" . ,signature))))
+   Per RFC 8555 Section 6.5, a badNonce response is retried once with a fresh
+   nonce.  The JWS protected header binds the nonce at build time, so the header
+   build, signing, and request all happen inside the loop and each attempt
+   re-signs with the current nonce (up to 2 retries, 3 attempts total)."
+  (let ((account-key (acme-client-account-key client))
+        (max-retries 2))
+    (loop for attempt from 0 to max-retries do
+      ;; Ensure a nonce at the top of every attempt: a badNonce response that
+      ;; omitted Replay-Nonce leaves us with none, so refetch a fresh one.
+      (unless (acme-client-nonce client)
+        (client-get client (rest (assoc :new-nonce (acme-client-directory client)))))
+      (let* ((protected-header
+               (if use-kid
+                   `(("alg" . "ES256")
+                     ("kid" . ,(acme-client-account-url client))
+                     ("nonce" . ,(acme-client-nonce client))
+                     ("url" . ,url))
+                   `(("alg" . "ES256")
+                     ("jwk" . ,(get-public-key-jwk account-key))
+                     ("nonce" . ,(acme-client-nonce client))
+                     ("url" . ,url))))
+             (protected64 (base64url-encode
+                           (cl-json:encode-json-to-string protected-header)))
+             (payload64 (if payload
+                            (base64url-encode
+                             (cl-json:encode-json-to-string payload))
+                            ""))
+             (signature (sign-payload account-key
+                                      (format nil "~A.~A" protected64 payload64)))
+             (jws `(("protected" . ,protected64)
+                    ("payload" . ,payload64)
+                    ("signature" . ,signature))))
 
-    (setf (acme-client-nonce client) nil)  ; Nonce is single-use
+        (setf (acme-client-nonce client) nil)  ; Nonce is single-use
 
-    (let ((cl+ssl:*make-ssl-client-stream-verify-default*
-            (if (acme-client-skip-tls-verify client)
-                nil
-                cl+ssl:*make-ssl-client-stream-verify-default*)))
-      (multiple-value-bind (body status headers)
-          (drakma:http-request url
-                               :method :post
-                               :content-type "application/jose+json"
-                               :content (cl-json:encode-json-to-string jws))
-        (let* ((nonce (rest (assoc :replay-nonce headers)))
-               (location (rest (assoc :location headers)))
-               (body-str (if (stringp body)
-                             body
-                             (flexi-streams:octets-to-string body :external-format :utf-8))))
-          (when nonce (setf (acme-client-nonce client) nonce))
-          (values (when (> (length body-str) 0)
-                    (cl-json:decode-json-from-string body-str))
-                  status
-                  location))))))
+        (multiple-value-bind (body status headers)
+            (let ((cl+ssl:*make-ssl-client-stream-verify-default*
+                    (if (acme-client-skip-tls-verify client)
+                        nil
+                        cl+ssl:*make-ssl-client-stream-verify-default*)))
+              (funcall *http-request-function* url
+                       :method :post
+                       :content-type "application/jose+json"
+                       :content (cl-json:encode-json-to-string jws)))
+          (let* ((nonce (rest (assoc :replay-nonce headers)))
+                 (location (rest (assoc :location headers)))
+                 (body-str (if (stringp body)
+                               body
+                               (flexi-streams:octets-to-string body :external-format :utf-8)))
+                 (response (when (> (length body-str) 0)
+                             (cl-json:decode-json-from-string body-str))))
+            ;; Capture the fresh nonce for the next attempt (single-use again).
+            (when nonce (setf (acme-client-nonce client) nonce))
+            (if (and (< attempt max-retries)
+                     (integerp status)
+                     (>= status 400)
+                     (let ((type (and (listp response)
+                                      (rest (assoc :type response)))))
+                       (and (stringp type)
+                            (string= type "urn:ietf:params:acme:error:badNonce"))))
+                ;; RFC 8555 Section 6.5: retry once with a fresh nonce.
+                (client-log client :debug
+                            "badNonce for ~A; retrying with a fresh nonce" url)
+                ;; Otherwise return the decoded result exactly as before.
+                (return (values response status location)))))))))
 
 ;;; ----------------------------------------------------------------------------
 ;;; ACME Protocol Operations
@@ -217,6 +241,12 @@
              (let ((state (rest (assoc :status response))))
                (client-log client :debug "Poll ~A/~A: ~A" attempt max-attempts state)
                (cond
+                 ;; A problem document carries a NUMERIC :status (e.g. 400),
+                 ;; unlike an order/authz body whose state is a string.  Treat a
+                 ;; non-string state as non-terminal and keep polling rather than
+                 ;; letting string= signal on a non-designator.
+                 ((not (stringp state))
+                  (sleep delay))
                  ((string= state "valid")
                   (return (values response :valid)))
                  ((string= state "ready")
@@ -267,7 +297,7 @@
                 nil
                 cl+ssl:*make-ssl-client-stream-verify-default*)))
       (multiple-value-bind (body status headers)
-          (drakma:http-request cert-url
+          (funcall *http-request-function* cert-url
                                :method :post
                                :content-type "application/jose+json"
                                :accept "application/pem-certificate-chain"

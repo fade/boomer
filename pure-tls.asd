@@ -141,4 +141,5 @@
                              (:file "x509test-tests")
                              (:file "security-regression-tests")
                              (:file "resumption-interop-tests")
+                             (:file "acme-client-tests")
                              (:file "runner")))))

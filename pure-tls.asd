@@ -115,6 +115,9 @@
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :depends-on ("pure-tls"
+               ;; The acme system supplies generate-validation-certificate and
+               ;; the DER encoders used by the id-pe-acmeIdentifier round-trip test.
+               "pure-tls/acme"
                "fiveam"
                "usocket"
                "iparse"

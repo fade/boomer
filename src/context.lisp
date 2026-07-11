@@ -91,9 +91,10 @@
    AUTO-LOAD-SYSTEM-CA - If T (default), automatically load system CA store
      when verify-mode is +VERIFY-REQUIRED+ and no CA file/directory is specified.
 
-   HOSTNAME-POLICY - HOSTNAME-POLICY value governing the RFC 6125 identity
-     decision for connections made with this context; defaults to
-     *GENERAL-HOSTNAME-POLICY* (the general profile)."
+   HOSTNAME-POLICY - A HOSTNAME-POLICY value governing hostname verification.
+     Defaults to *GENERAL-HOSTNAME-POLICY* (the RFC 6125 general profile); pass
+     *STRICT-PRIVACY-HOSTNAME-POLICY* to opt into SAN-only, wildcard-excluding
+     verification."
   (let ((ctx (make-tls-context-struct
               :verify-mode verify-mode
               :verify-depth verify-depth

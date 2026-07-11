@@ -386,6 +386,73 @@
 
 ;;;; Test Runner
 
+(defun build-self-signed-cert-with-critical-extension (oid value-octets)
+  "Build DER for a self-signed P-256 certificate carrying one CRITICAL
+extension at OID (a list of arc integers) whose value is VALUE-OCTETS wrapped
+in an OCTET STRING.  Reuses pure-tls/acme's DER encoders so the structure
+mirrors what the ACME challenge path emits.  parse-certificate does not verify
+the signature, so the signed bytes only need to be well formed."
+  (multiple-value-bind (private-key public-key)
+      (ironclad:generate-key-pair :secp256r1)
+    (let* ((not-before (get-universal-time))
+           (not-after (+ not-before 3600))
+           (subject (acme::encode-subject "scoping.example"))
+           (crit-ext (acme::encode-critical-extension
+                      oid (acme::encode-octet-string value-octets)))
+           (tbs (acme::encode-sequence
+                 (acme::encode-context-tag 0 (acme::encode-integer 2))
+                 (acme::encode-integer 1)
+                 (acme::encode-sequence
+                  (acme::encode-oid acme::*oid-ecdsa-with-sha256*))
+                 subject
+                 (acme::encode-validity not-before not-after)
+                 subject
+                 (acme::encode-ec-public-key public-key)
+                 (acme::encode-x509-extensions (list crit-ext))))
+           (raw-sig (ironclad:sign-message
+                     private-key (ironclad:digest-sequence :sha256 tbs)))
+           (der-sig (acme::encode-ecdsa-signature raw-sig)))
+      (acme::encode-sequence
+       tbs
+       (acme::encode-sequence (acme::encode-oid acme::*oid-ecdsa-with-sha256*))
+       (acme::encode-bit-string der-sig)))))
+
+(test acme-identifier-critical-extension-accepted
+  "An id-pe-acmeIdentifier (RFC 8737) CRITICAL extension must parse cleanly.
+pure-tls's own ACME path emits this OID on the tls-alpn-01 challenge
+certificate, so the parser must recognize it as :acme-identifier rather than
+rejecting it as an unknown critical extension."
+  (multiple-value-bind (cert-pem key-pem private-key)
+      (acme::generate-validation-certificate
+       "acme-verify.example" "challenge-token.account-thumbprint")
+    (declare (ignore key-pem private-key))
+    (let* ((pem-octets (map '(simple-array (unsigned-byte 8) (*))
+                            #'char-code cert-pem))
+           (der (pure-tls::pem-decode pem-octets "CERTIFICATE"))
+           ;; Must not signal an unknown-critical tls-decode-error.
+           (cert (pure-tls::parse-certificate der))
+           (ext (find :acme-identifier
+                      (pure-tls::x509-certificate-extensions cert)
+                      :key #'pure-tls::x509-extension-oid)))
+      (is (not (null ext))
+          "acmeIdentifier OID must resolve to the :acme-identifier keyword")
+      (is (eq :acme-identifier (pure-tls::x509-extension-oid ext))
+          "Extension OID must be recognized as :acme-identifier")
+      (is (pure-tls::x509-extension-critical ext)
+          "acmeIdentifier extension must be marked critical")
+      (is (null (pure-tls::certificate-has-unknown-critical-extensions-p cert))
+          "A recognized acmeIdentifier must not count as an unknown critical extension"))))
+
+(test unknown-critical-extension-still-rejected
+  "Whitelisting id-pe-acmeIdentifier must not weaken RFC 5280 s4.2 enforcement.
+A CRITICAL extension at an unrelated, unrecognized OID must still be rejected
+at parse time, proving the whitelist is scoped to the single acmeIdentifier OID."
+  (let ((der (build-self-signed-cert-with-critical-extension
+              '(1 3 6 1 4 1 99999 1)
+              (coerce '(0) '(vector (unsigned-byte 8))))))
+    (signals pure-tls:tls-decode-error
+      (pure-tls::parse-certificate der))))
+
 (defun run-certificate-tests ()
   "Run all certificate tests."
   (run! 'certificate-tests))

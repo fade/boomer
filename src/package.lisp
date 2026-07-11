@@ -53,6 +53,7 @@
    #:hostname-policy-allow-wildcards
    #:hostname-policy-allow-cn-fallback
    #:*general-hostname-policy*
+   #:*strict-privacy-hostname-policy*
 
    ;; Crypto utilities
    #:random-bytes

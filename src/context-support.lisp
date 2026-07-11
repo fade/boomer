@@ -105,3 +105,12 @@
    fallback when no subjectAltName is present.  Preserves the library's
    general-purpose behaviour for every caller that does not compose a stricter
    policy.")
+
+(defvar *strict-privacy-hostname-policy*
+  (make-hostname-policy :allow-wildcards nil :allow-cn-fallback nil)
+  "An opt-in composition for RFC 8310 section 8.1 Strict Privacy: an identity is
+   trusted only through the certificate's subjectAltName (Common Name is never
+   consulted, a no-SAN certificate is rejected) and wildcard SANs are excluded.
+   Selected by a consumer -- e.g. a DNS-over-TLS resolver authenticating a
+   specific resolver name -- via the context constructor; it is never the
+   library default.")

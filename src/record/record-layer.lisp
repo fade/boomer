@@ -162,6 +162,27 @@
   (max-in-ciphertext +max-record-size-with-padding+ :type fixnum)
   (max-in-plaintext +max-record-size+ :type fixnum)
   (max-out-plaintext +max-record-size+ :type fixnum)
+  ;; MAX-OUT-CIPHERTEXT is deliberately consulted by nothing.  It records the
+  ;; budget a caller asked for and completes the set of four, but no honest
+  ;; check can be built from it, and the two places one could go are both
+  ;; wrong.
+  ;;
+  ;; Before encryption the ciphertext size is not known.  The padding policy is
+  ;; an arbitrary function of the fragment, so bounding the fragment by a
+  ;; ciphertext budget in advance means guessing what that function will decide,
+  ;; and a guess that comes in low silently shrinks records for no stated
+  ;; reason while one that comes in high does not bound anything.
+  ;;
+  ;; After encryption the size is known and the refusal is too late.  Producing
+  ;; the ciphertext has already advanced the write sequence number, so rejecting
+  ;; the record at that point spends a sequence number on octets that never
+  ;; reach the peer, and the peer counts differently from us for the rest of the
+  ;; connection.  That failure surfaces as records that will not authenticate,
+  ;; which reads as tampering rather than as a budget check.
+  ;;
+  ;; Enforcing this budget therefore needs the padding policy to state a bound
+  ;; the layer can compute up front.  It is a change to that contract, not a
+  ;; missing call.
   (max-out-ciphertext +max-record-size-with-padding+ :type fixnum)
   ;; Inbound cursor.  IN-PHASE says whether we are between records, partway
   ;; through the 5-byte header, or partway through the body.

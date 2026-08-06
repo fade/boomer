@@ -265,6 +265,62 @@
         (is (equalp tail moved)
             "Only the tail from the input position satisfies the check")))))
 
+;;;; Reading a record while plaintext is still held
+
+(defun record-on-the-wire (content-type body)
+  "An input stream carrying one whole unencrypted TLS record."
+  (let ((wire (pure-tls::make-octet-vector (+ 5 (length body)))))
+    (setf (aref wire 0) content-type
+          (aref wire 1) 3
+          (aref wire 2) 3
+          (aref wire 3) (ldb (byte 8 8) (length body))
+          (aref wire 4) (ldb (byte 8 0) (length body)))
+    (replace wire body :start1 5)
+    (flexi-streams:make-in-memory-input-stream wire)))
+
+(test record-read-refuses-a-record-while-plaintext-is-held
+  "Asking for a record while the layer still holds decrypted octets is refused.
+
+   A caller drains what the layer is holding before it asks the transport for
+   more.  Forgetting to used to cost nothing visible: it reorders the stream,
+   and the octets arrive looking like the peer sent them that way round, which
+   is not something the caller can debug from what it sees.  Both directions of
+   the refusal are checked here, because a guard nobody
+   has watched go red is not a guard: a layer holding nothing reads through as
+   it always has, and a layer holding something refuses and keeps the record for
+   afterwards."
+  (let ((body (pure-tls::octet-vector 1 2 3)))
+    ;; Holding nothing: the read goes through to the transport.
+    (let ((layer (pure-tls::make-record-layer
+                  (record-on-the-wire pure-tls::+content-type-handshake+ body))))
+      (multiple-value-bind (content-type fragment) (pure-tls::record-layer-read layer)
+        (is (= pure-tls::+content-type-handshake+ content-type)
+            "A layer holding no plaintext should read the record it was sent")
+        (is (equalp body fragment)
+            "and hand back the octets that record carried")))
+    ;; Holding something: the same call refuses, and says how much is waiting.
+    (let ((layer (pure-tls::make-record-layer
+                  (record-on-the-wire pure-tls::+content-type-handshake+ body)))
+          (held (pure-tls::octet-vector 9 9)))
+      (setf (pure-tls::record-layer-in-plaintext layer) held)
+      (signals pure-tls::tls-plaintext-pending
+        (pure-tls::record-layer-read layer))
+      (is (= 2 (handler-case (progn (pure-tls::record-layer-read layer) nil)
+                 (pure-tls::tls-plaintext-pending (condition)
+                   (pure-tls::tls-plaintext-pending-available condition))))
+          "The refusal should be specific enough to handle on its own and should
+           name how many octets are waiting")
+      (let ((sink (pure-tls::make-octet-vector 2)))
+        (pure-tls::record-layer-take-plaintext layer sink)
+        (is (equalp held sink)
+            "The held octets should come out first, which is the ordering the
+             refusal exists to keep"))
+      (multiple-value-bind (content-type fragment) (pure-tls::record-layer-read layer)
+        (is (= pure-tls::+content-type-handshake+ content-type)
+            "The record was held back rather than lost")
+        (is (equalp body fragment)
+            "and arrives intact once the plaintext in front of it is taken")))))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

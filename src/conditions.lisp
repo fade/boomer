@@ -195,6 +195,26 @@
                            (tls-record-overflow-max-size condition))))))
   (:documentation "TLS record exceeds maximum size"))
 
+;;;; Record Layer Sequencing Errors
+;;;
+;;; These report the same kind of fault: the caller asked the record layer to
+;;; do something out of turn.  Each way of getting that wrong has its own type,
+;;; so a caller can tell which turn it missed from the type alone, without
+;;; parsing a message.
+
+(define-condition tls-plaintext-pending (tls-record-error)
+  ((available :initarg :available
+              :initform 0
+              :reader tls-plaintext-pending-available))
+  (:report (lambda (condition stream)
+             (format stream
+                     "TLS record layer holds ~D untaken decrypted octet~:P; ~
+                      take them before reading another record."
+                     (tls-plaintext-pending-available condition))))
+  (:documentation "A record was asked for while decrypted plaintext was still held.
+   Serving the new record first would hand the caller octets out of the order the
+   peer sent them, so the read is refused rather than silently reordered."))
+
 ;;;; Crypto Errors
 
 (define-condition tls-crypto-error (tls-error)

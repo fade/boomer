@@ -396,7 +396,17 @@
    Uses WITH-BUFFER-CONTEXT so pool-allocated read buffers inside
    read-tls-record are automatically recycled on scope exit.
    The returned fragment is always a fresh exact-sized buffer safe
-   for use beyond the context scope."
+   for use beyond the context scope.
+
+   Signals TLS-PLAINTEXT-PENDING if the layer is still holding decrypted octets
+   that no reader has taken.  Those octets came off the connection ahead of
+   anything this call would read, so serving a new record first would deliver
+   the stream out of order.  RECORD-LAYER-TAKE-PLAINTEXT drains them; this
+   function will not, because a caller that asked for a record and was handed
+   held-over plaintext instead has been answered a different question."
+  (let ((pending (record-layer-plaintext-available layer)))
+    (when (plusp pending)
+      (error 'tls-plaintext-pending :available pending)))
   (check-tls-context)
   (with-buffer-context (*buffer-pool*)
     (let* ((record (read-tls-record (record-layer-stream layer)

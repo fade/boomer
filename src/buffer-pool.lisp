@@ -26,7 +26,23 @@
 
 (defconstant +pool-max-per-size+ 32)   ; default cap on cached buffers per size class
 
-(defstruct (buffer-pool (:constructor %make-buffer-pool))
+;;; No copier is generated, because a pool is its contents and the lock that
+;;; guards them, and neither way of duplicating that yields a pool.
+;;;
+;;; A shallow copy shares the lock and the free lists with the original, but
+;;; keeps its own counts.  Every release through one pool then moves a count
+;;; the other one does not see, so both drift away from the lists they are
+;;; supposed to describe and the retention cap stops meaning anything.
+;;;
+;;; A deep copy hands out a second pool holding the same buffers as the first.
+;;; A buffer acquired from one and released to the other is then cached twice
+;;; and handed to two callers at once, so the octets one of them writes appear
+;;; in the other's record.
+;;;
+;;; A caller wanting more pooling capacity wants another pool from
+;;; %MAKE-BUFFER-POOL, which starts empty and owns its own lock.
+(defstruct (buffer-pool (:constructor %make-buffer-pool)
+                        (:copier nil))
   (lock (bt:make-lock "buffer-pool"))
   (small nil :type list)
   (medium nil :type list)

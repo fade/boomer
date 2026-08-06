@@ -178,13 +178,17 @@
                        (pure-tls::make-octet-vector 16 :initial-element fill)
                        (pure-tls::make-octet-vector 12 :initial-element (1+ fill))))
 
-(defun make-handover-stream (payload consumed)
+(defun make-handover-stream (payload consumed
+                             &optional (transport
+                                        (flexi-streams:make-in-memory-output-stream)))
   "A blocking TLS stream holding PAYLOAD as decrypted input, of which the
    application has already read the first CONSUMED octets.  The prefix is read
    through the ordinary blocking path so the input position ends up where a real
-   application would have left it."
-  (let* ((transport (flexi-streams:make-in-memory-output-stream))
-         (stream (make-instance 'pure-tls::tls-client-stream :stream transport))
+   application would have left it.
+
+   TRANSPORT is what the stream and, after a handover, the record layer write
+   to; a caller passes one in when what it needs to watch is the transport."
+  (let* ((stream (make-instance 'pure-tls::tls-client-stream :stream transport))
          (layer (pure-tls::make-record-layer transport)))
     (setf (pure-tls::record-layer-read-cipher layer) (handover-cipher 1)
           (pure-tls::record-layer-write-cipher layer) (handover-cipher 3)
@@ -813,6 +817,172 @@
           "with its octets intact"))
     (is (not (pure-tls::record-layer-message-available-p layer))
         "and taking it leaves the layer ready for the next record")))
+
+;;;; Ownership of the connection after the handover
+
+;;; Adoption passes the stream's AEAD ciphers and its transport across by
+;;; reference, so an unmarked stream would go on holding accessors for state it
+;;; no longer owns: a further write advances a sequence number the layer is also
+;;; advancing, and a close ends a connection that is still in use.  What follows
+;;; checks that the stream stops acting on either, and, as the control that
+;;; makes those checks mean something, that a stream which has not been through
+;;; a handover still does all of it.
+
+(defclass handover-probe-transport
+    (trivial-gray-streams:fundamental-binary-output-stream)
+  ((sink :initform (flexi-streams:make-in-memory-output-stream)
+         :reader probe-sink)
+   (closed :initform nil :accessor probe-closed-p))
+  (:documentation "A transport that keeps what was written to it and remembers
+   whether anyone closed it."))
+
+(defmethod trivial-gray-streams:stream-write-byte
+    ((transport handover-probe-transport) byte)
+  (write-byte byte (probe-sink transport)))
+
+(defmethod trivial-gray-streams:stream-write-sequence
+    ((transport handover-probe-transport) sequence start end &key)
+  (write-sequence sequence (probe-sink transport) :start start :end end)
+  sequence)
+
+(defmethod close ((transport handover-probe-transport) &key abort)
+  (declare (ignore abort))
+  (setf (probe-closed-p transport) t))
+
+(defun probe-octets (transport)
+  "Everything written to TRANSPORT so far, as one vector."
+  (flexi-streams:get-output-stream-sequence (probe-sink transport)))
+
+(test spent-stream-refuses-every-input-and-output-entry-point
+  "A stream whose ciphers and transport have gone to a record layer refuses to
+   read, to write and to flush, and says which call it refused.
+
+   Each entry point is asked separately and any other error is reported as
+   itself rather than as a refusal, so removing the guard shows up as one red
+   per entry point instead of as the first one blowing up and hiding the rest."
+  (let* ((stream (make-handover-stream (pure-tls::octet-vector 1 2 3 4) 0))
+         (layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
+    (is (pure-tls::record-layer-p layer)
+        "The handover should produce a layer")
+    (is (pure-tls::tls-stream-spent-p stream)
+        "and should leave the stream spent")
+    (loop for (entry . call) in
+          (list (cons "reading a byte" (lambda () (read-byte stream)))
+                (cons "reading a sequence"
+                      (lambda () (read-sequence (pure-tls::make-octet-vector 4)
+                                                stream)))
+                (cons "writing a byte" (lambda () (write-byte 65 stream)))
+                (cons "writing a sequence"
+                      (lambda () (write-sequence (pure-tls::octet-vector 65 66)
+                                                 stream)))
+                (cons "flushing output" (lambda () (force-output stream)))
+                (cons "finishing output" (lambda () (finish-output stream))))
+          do (multiple-value-bind (outcome report)
+                 (handler-case (progn (funcall call) (values :allowed nil))
+                   (pure-tls::tls-stream-spent (refusal)
+                     (values :refused (princ-to-string refusal)))
+                   (error (other)
+                     (values :some-other-error (princ-to-string other))))
+               (is (eq :refused outcome)
+                   "~A on a spent stream should signal TLS-STREAM-SPENT, ~
+                    and instead gave ~A~@[: ~A~]"
+                   entry outcome report)))
+    ;; The refusal is specific enough to act on, rather than something a caller
+    ;; has to recognise by reading the message.  Asked so that a stream which
+    ;; does not refuse at all fails here too, rather than skipping the check.
+    (is (eq :named
+            (handler-case (progn (read-byte stream) :not-refused)
+              (pure-tls::tls-stream-spent (refusal)
+                (if (and (typep refusal 'pure-tls:tls-error)
+                         (search "reading a byte" (princ-to-string refusal)))
+                    :named
+                    :unnamed))))
+        "The refusal reports under the library's own condition hierarchy and ~
+         names the entry point it refused")))
+
+(test unadopted-stream-serves-every-input-and-output-entry-point
+  "The control for the refusals above.  A stream that has not been handed over
+   reads, writes and flushes as it always did, so a refusal is a statement about
+   this stream rather than about every stream."
+  (let* ((payload (pure-tls::octet-vector 1 2 3 4 5 6))
+         (stream (make-handover-stream payload 0)))
+    (is (not (pure-tls::tls-stream-spent-p stream))
+        "A stream that has not been handed over is not spent")
+    (is (= 1 (read-byte stream))
+        "It reads a byte")
+    (let ((taken (pure-tls::make-octet-vector 3)))
+      (is (= 3 (read-sequence taken stream))
+          "It reads a sequence")
+      (is (equalp (pure-tls::octet-vector 2 3 4) taken)
+          "and hands back the octets the peer sent, in order"))
+    (is (= 65 (write-byte 65 stream))
+        "It takes a byte")
+    (write-sequence (pure-tls::octet-vector 66 67) stream)
+    (is (= 3 (pure-tls::tls-stream-output-position stream))
+        "It takes a sequence, and holds what it was given")
+    (finish-output stream)
+    (is (zerop (pure-tls::tls-stream-output-position stream))
+        "and a flush puts the held octets through the record layer")))
+
+(test closing-spent-stream-leaves-the-transport-to-the-layer
+  "Closing a spent stream shuts down the stream object and leaves the connection
+   alone, because the transport belongs to the layer that took it."
+  (let* ((transport (make-instance 'handover-probe-transport))
+         (stream (make-handover-stream (pure-tls::octet-vector 7 8 9) 0 transport))
+         (layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
+    (close stream)
+    (is (pure-tls::tls-stream-closed-p stream)
+        "The stream object closes")
+    (is (not (probe-closed-p transport))
+        "without closing the transport it no longer owns")
+    (pure-tls::record-layer-write-application-data
+     layer (pure-tls::octet-vector 10 11 12))
+    (is (plusp (length (probe-octets transport)))
+        "and the layer can still put a record on the wire afterwards")))
+
+(test closing-unadopted-stream-closes-the-transport
+  "The control for the check above.  A stream that still owns its transport does
+   close it, so leaving it open is something a spent stream does and not
+   something CLOSE never got round to."
+  (let* ((transport (make-instance 'handover-probe-transport))
+         (stream (make-handover-stream (pure-tls::octet-vector 7 8 9) 0 transport)))
+    (close stream)
+    (is (probe-closed-p transport)
+        "A stream that owns its transport closes it")))
+
+(test failed-handover-leaves-the-stream-unspent-and-usable
+  "A handover either produces a layer or leaves the stream owning everything it
+   started with.  There is no state in between, because a stream marked spent
+   with nothing having taken the connection is a connection nobody owns."
+  ;; Refused before anything moves: the caller tried to supply the plaintext.
+  (let* ((payload (pure-tls::octet-vector 20 21 22 23))
+         (stream (make-handover-stream payload 0)))
+    (signals error
+      (pure-tls::adopt-record-layer-from-tls-stream stream :in-plaintext payload))
+    (is (not (pure-tls::tls-stream-spent-p stream))
+        "A refused handover leaves the stream unspent")
+    (is (= 4 (pure-tls::tls-stream-buffer-remaining stream))
+        "with its inbound plaintext untouched")
+    (is (= 20 (read-byte stream))
+        "and a reader picks up where it left off"))
+  ;; Refused partway, after the plaintext has been taken off the stream: the
+  ;; ciphers the layer requires are not there.
+  (let* ((payload (pure-tls::octet-vector 30 31 32 33))
+         (stream (make-handover-stream payload 1)))
+    (setf (pure-tls::record-layer-read-cipher
+           (pure-tls::tls-stream-record-layer stream))
+          nil)
+    (signals error (pure-tls::adopt-record-layer-from-tls-stream stream))
+    (is (not (pure-tls::tls-stream-spent-p stream))
+        "A handover that fails partway also leaves the stream unspent")
+    (is (= 3 (pure-tls::tls-stream-buffer-remaining stream))
+        "with the plaintext put back rather than lost between the two owners")
+    (is (= 31 (read-byte stream))
+        "and the next octet is the one the reader was owed")
+    (write-byte 99 stream)
+    (finish-output stream)
+    (is (zerop (pure-tls::tls-stream-output-position stream))
+        "and the write side still works")))
 
 (defun run-record-tests ()
   "Run all record layer tests."

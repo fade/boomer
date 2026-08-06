@@ -18,6 +18,14 @@
 ;;; large (16KB+256 for max TLS record + AEAD overhead).
 ;;; Oversized buffers are allocated directly and not pooled.
 
+(defconstant +pool-small-size+ 64)
+
+(defconstant +pool-medium-size+ 1024)
+
+(defconstant +pool-large-size+ 16640)  ; 16384 + 256 padding
+
+(defconstant +pool-max-per-size+ 32)   ; default cap on cached buffers per size class
+
 (defstruct (buffer-pool (:constructor %make-buffer-pool))
   (lock (bt:make-lock "buffer-pool"))
   (small nil :type list)
@@ -25,15 +33,16 @@
   (large nil :type list)
   (small-count 0 :type fixnum)
   (medium-count 0 :type fixnum)
-  (large-count 0 :type fixnum))
+  (large-count 0 :type fixnum)
+  ;; How many buffers this pool will keep cached in each size class before it
+  ;; starts dropping released buffers on the floor.  Per pool rather than
+  ;; global so a pool serving few connections need not hold the same retained
+  ;; footprint as one serving many.  Defaults to the value that was fixed for
+  ;; every pool before it became settable.
+  (max-per-size +pool-max-per-size+ :type fixnum))
 
 (defvar *buffer-pool* (%make-buffer-pool)
   "Global buffer pool for TLS record buffers.")
-
-(defconstant +pool-small-size+ 64)
-(defconstant +pool-medium-size+ 1024)
-(defconstant +pool-large-size+ 16640)  ; 16384 + 256 padding
-(defconstant +pool-max-per-size+ 32)   ; max cached buffers per size class
 
 (defun pool-acquire (pool size)
   "Acquire a buffer of at least SIZE bytes from POOL, or allocate fresh."
@@ -62,19 +71,21 @@
   "Return BUF to POOL for reuse.  Oversized buffers are dropped."
   (declare (type buffer-pool pool)
            (type (simple-array (unsigned-byte 8) (*)) buf))
-  (let ((len (length buf)))
+  (let ((len (length buf))
+        (cap (buffer-pool-max-per-size pool)))
+    (declare (type fixnum cap))
     (bt:with-lock-held ((buffer-pool-lock pool))
       (cond
         ((= len +pool-small-size+)
-         (when (< (buffer-pool-small-count pool) +pool-max-per-size+)
+         (when (< (buffer-pool-small-count pool) cap)
            (push buf (buffer-pool-small pool))
            (incf (buffer-pool-small-count pool))))
         ((= len +pool-medium-size+)
-         (when (< (buffer-pool-medium-count pool) +pool-max-per-size+)
+         (when (< (buffer-pool-medium-count pool) cap)
            (push buf (buffer-pool-medium pool))
            (incf (buffer-pool-medium-count pool))))
         ((= len +pool-large-size+)
-         (when (< (buffer-pool-large-count pool) +pool-max-per-size+)
+         (when (< (buffer-pool-large-count pool) cap)
            ;; Zero before returning to pool (security)
            (fill buf 0)
            (push buf (buffer-pool-large pool))

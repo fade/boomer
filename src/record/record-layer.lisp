@@ -154,16 +154,176 @@
   (stream nil)
   (max-send-fragment +max-record-size+ :type fixnum)
   (ccs-count 0 :type fixnum)
-  (request-context nil :type t))
+  (request-context nil :type t)
+  ;; Engine limits.  The protocol ceilings are fixed by RFC 8446 and stay
+  ;; constants; these are the per-layer allocation and acceptance budgets,
+  ;; which a caller may want to set lower than the ceiling.  The defaults are
+  ;; the ceilings, so a layer built without them behaves as it always has.
+  (max-in-ciphertext +max-record-size-with-padding+ :type fixnum)
+  (max-in-plaintext +max-record-size+ :type fixnum)
+  (max-out-plaintext +max-record-size+ :type fixnum)
+  (max-out-ciphertext +max-record-size-with-padding+ :type fixnum)
+  ;; Inbound cursor.  IN-PHASE says whether we are between records, partway
+  ;; through the 5-byte header, or partway through the body.
+  ;;
+  ;; IN-HEADER carries the header bytes seen so far packed into one integer,
+  ;; most significant byte first: content type in bits 32-39, legacy version
+  ;; in bits 16-31, body length in bits 0-15.  Forty bits fits inside a
+  ;; 62-bit SBCL fixnum, so a partially read header is an immediate value and
+  ;; never reaches the heap.  The three fields are extracted on demand by the
+  ;; accessors below rather than stored again.  IN-HEADER-SEEN counts the
+  ;; header bytes accumulated, 0 through 5.
+  (in-phase :idle :type (member :idle :header :body))
+  (in-header 0 :type fixnum)
+  (in-header-seen 0 :type fixnum)
+  (in-body nil :type (or null octet-vector))
+  (in-body-filled 0 :type fixnum)
+  ;; Inbound plaintext.  IN-PLAINTEXT holds bytes that have already been
+  ;; decrypted but that the caller has not taken yet, and IN-PLAINTEXT-START is
+  ;; how far into them the caller has read.  The cursors above track the
+  ;; ciphertext side of the same direction; these two are its plaintext side,
+  ;; and mirror OUT-SOURCE / OUT-START on the outbound path.
+  (in-plaintext nil :type (or null octet-vector))
+  (in-plaintext-start 0 :type fixnum)
+  ;; Outbound cursor.  OUT-RECORD holds one already encrypted record that the
+  ;; transport has not finished accepting, and OUT-RECORD-SENT is how many of
+  ;; its bytes went out.
+  ;;
+  ;; The ciphertext has to be retained because encryption is not repeatable.
+  ;; Producing it advanced the write direction's AEAD sequence number, and
+  ;; that advance cannot be undone.  Encrypting the same fragment a second
+  ;; time to retry a short write either reuses the nonce the first attempt
+  ;; consumed, which breaks AEAD confidentiality outright rather than merely
+  ;; failing the connection, or burns another sequence number and leaves the
+  ;; peer's counter behind ours.  The only safe resumption is byte-wise, from
+  ;; the ciphertext we already have.
+  ;;
+  ;; Next to the plaintext cursor below this pair reads as redundant
+  ;; buffering, and folding it away into re-encrypt-and-retry looks tidier and
+  ;; passes every test we have.  It also puts nonce reuse back.
+  (out-record nil :type (or null octet-vector))
+  (out-record-sent 0 :type fixnum)
+  ;; The plaintext still being fragmented into records: the source vector and
+  ;; the half-open span of it that has not yet been turned into records, plus
+  ;; the content type every record cut from it carries.
+  (out-source nil :type (or null octet-vector))
+  (out-start 0 :type fixnum)
+  (out-end 0 :type fixnum)
+  (out-content-type 0 :type fixnum))
+
+(declaim (inline record-layer-in-content-type
+                 record-layer-in-version
+                 record-layer-in-length))
+
+(defun record-layer-in-content-type (layer)
+  "Content type of the inbound record header accumulated in LAYER.
+   Meaningful once RECORD-LAYER-IN-HEADER-SEEN has reached 1."
+  (declare (type record-layer layer))
+  (ldb (byte 8 32) (record-layer-in-header layer)))
+
+(defun record-layer-in-version (layer)
+  "Legacy record version of the inbound record header accumulated in LAYER.
+   Meaningful once RECORD-LAYER-IN-HEADER-SEEN has reached 3."
+  (declare (type record-layer layer))
+  (ldb (byte 16 16) (record-layer-in-header layer)))
+
+(defun record-layer-in-length (layer)
+  "Body length of the inbound record header accumulated in LAYER.
+   Meaningful once RECORD-LAYER-IN-HEADER-SEEN has reached 5."
+  (declare (type record-layer layer))
+  (ldb (byte 16 0) (record-layer-in-header layer)))
 
 (defun make-record-layer (stream &key (max-send-fragment +max-record-size+)
-                                      request-context)
+                                      request-context
+                                      (max-in-ciphertext +max-record-size-with-padding+)
+                                      (max-in-plaintext +max-record-size+)
+                                      (max-out-plaintext +max-record-size+)
+                                      (max-out-ciphertext +max-record-size-with-padding+))
   "Create a new record layer for the given stream.
    MAX-SEND-FRAGMENT sets the maximum plaintext size for outgoing records.
-   REQUEST-CONTEXT is an optional cl-cancel context for timeout/cancellation support."
+   REQUEST-CONTEXT is an optional cl-cancel context for timeout/cancellation support.
+   MAX-IN-CIPHERTEXT, MAX-IN-PLAINTEXT, MAX-OUT-PLAINTEXT and MAX-OUT-CIPHERTEXT
+   are this layer's own budgets for the four record buffers.  They default to
+   the protocol ceilings, which is what the layer has always accepted; a caller
+   that wants a smaller memory footprint per connection can set them lower."
   (%make-record-layer :stream stream
                       :max-send-fragment max-send-fragment
-                      :request-context request-context))
+                      :request-context request-context
+                      :max-in-ciphertext max-in-ciphertext
+                      :max-in-plaintext max-in-plaintext
+                      :max-out-plaintext max-out-plaintext
+                      :max-out-ciphertext max-out-ciphertext))
+
+;;; A live connection is adopted by handing over the cipher objects themselves,
+;;; never key material.  An AEAD cipher owns its record sequence number, and
+;;; that counter is as much a part of the connection's state as the key is: it
+;;; feeds the per-record nonce on the write side, and it has to agree with the
+;;; peer's count on the read side.  Rebuilding a cipher from the same key and
+;;; IV yields an object that looks correct in every visible respect and starts
+;;; counting from zero, which rewinds both directions at once.  On the write
+;;; side that repeats nonces the connection has already spent, and the loss is
+;;; confidentiality rather than the connection.  On the read side the next
+;;; record simply fails to authenticate, and it presents as the peer breaking
+;;; protocol rather than as anything to do with the handover.
+;;;
+;;; This constructor therefore accepts no key and no IV, and has no way to
+;;; build a cipher.  A caller holding only key material cannot reach it at all,
+;;; which is the point: avoiding the reset is not something a later reader has
+;;; to know about in order to get right.
+(defun adopt-record-layer (stream &key read-cipher write-cipher cipher-suite
+                                       in-plaintext (in-plaintext-start 0)
+                                       (max-send-fragment +max-record-size+)
+                                       request-context
+                                       (max-in-ciphertext +max-record-size-with-padding+)
+                                       (max-in-plaintext +max-record-size+)
+                                       (max-out-plaintext +max-record-size+)
+                                       (max-out-ciphertext +max-record-size-with-padding+))
+  "Build a record layer for STREAM from a connection that is already established.
+
+   READ-CIPHER and WRITE-CIPHER are the live AEAD-CIPHER objects the handshake
+   finished with, and both are required.  They are stored by reference, so the
+   sequence number each one carries continues from wherever the handshake left
+   it.  CIPHER-SUITE defaults to the suite the read cipher was built for.
+
+   IN-PLAINTEXT is decrypted payload that has arrived but not yet been handed
+   to a reader, and IN-PLAINTEXT-START is how much of it was already taken.
+   The inbound ciphertext cursors are set idle, which is what a blocking
+   handshake leaves behind: whole records were consumed, so no partial record
+   is outstanding.
+
+   The remaining arguments carry the meanings they have for MAKE-RECORD-LAYER."
+  (unless (aead-cipher-p read-cipher)
+    (error "adopt-record-layer: READ-CIPHER must be a live AEAD-CIPHER, got ~S."
+           read-cipher))
+  (unless (aead-cipher-p write-cipher)
+    (error "adopt-record-layer: WRITE-CIPHER must be a live AEAD-CIPHER, got ~S."
+           write-cipher))
+  (check-type in-plaintext (or null octet-vector))
+  (check-type in-plaintext-start fixnum)
+  (unless (<= 0 in-plaintext-start (length (or in-plaintext #())))
+    (error "adopt-record-layer: IN-PLAINTEXT-START ~S lies outside IN-PLAINTEXT."
+           in-plaintext-start))
+  (%make-record-layer :stream stream
+                      :read-cipher read-cipher
+                      :write-cipher write-cipher
+                      :cipher-suite (or cipher-suite
+                                        (aead-cipher-cipher-suite read-cipher))
+                      :max-send-fragment max-send-fragment
+                      :request-context request-context
+                      :max-in-ciphertext max-in-ciphertext
+                      :max-in-plaintext max-in-plaintext
+                      :max-out-plaintext max-out-plaintext
+                      :max-out-ciphertext max-out-ciphertext
+                      ;; Idle inbound ciphertext cursors, stated here rather
+                      ;; than left to the slot defaults, so the assumption is
+                      ;; visible at the point the layer is built.
+                      :in-phase :idle
+                      :in-header 0
+                      :in-header-seen 0
+                      :in-body nil
+                      :in-body-filled 0
+                      :in-plaintext in-plaintext
+                      :in-plaintext-start in-plaintext-start))
 
 (defun record-layer-install-keys (layer direction key iv cipher-suite)
   "Install encryption keys for the specified direction (:read or :write)."

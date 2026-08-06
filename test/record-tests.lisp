@@ -321,6 +321,242 @@
         (is (equalp body fragment)
             "and arrives intact once the plaintext in front of it is taken")))))
 
+;;;; Handing records to a transport that takes them a few octets at a time
+
+;;; Nothing below decrypts anything, and nothing builds a second cipher from the
+;;; same key and IV.  Each record's ciphertext is produced exactly once; what is
+;;; checked is that the same octets come back out of the layer afterwards.
+
+(defun outbound-cipher ()
+  "A live AEAD cipher for the outbound tests.  Key and IV are fixed so runs are
+   reproducible; nothing here decrypts, so no peer needs them."
+  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
+                       (pure-tls::make-octet-vector 16 :initial-element 7)
+                       (pure-tls::make-octet-vector 12 :initial-element 9)))
+
+(defun outbound-layer (cipher &key (max-send-fragment 16))
+  "A record layer with no stream at all.  Passing NIL where the stream goes is
+   part of the point: this path hands out octets and must never reach for a
+   transport of its own."
+  (let ((layer (pure-tls::make-record-layer nil :max-send-fragment max-send-fragment)))
+    (setf (pure-tls::record-layer-write-cipher layer) cipher
+          (pure-tls::record-layer-cipher-suite layer) pure-tls:+tls-aes-128-gcm-sha256+)
+    layer))
+
+(defun counting-payload (size)
+  "SIZE octets that all differ from their neighbours, so a span taken from the
+   wrong place is visible rather than plausible."
+  (let ((payload (pure-tls::make-octet-vector size)))
+    (dotimes (i size payload)
+      (setf (aref payload i) (mod i 251)))))
+
+(defun outbound-sequence-number (layer)
+  "How many records LAYER's write cipher has encrypted."
+  (pure-tls::aead-cipher-sequence-number (pure-tls::record-layer-write-cipher layer)))
+
+(defun drain-outbound (layer accept)
+  "Run LAYER's outbound path to exhaustion against a transport that takes at
+   most ACCEPT octets each time round.  Returns every octet the transport
+   received, in order, and the list of records the layer framed."
+  (let ((received (make-array 0 :element-type '(unsigned-byte 8)
+                                :adjustable t :fill-pointer 0))
+        (records '()))
+    (loop
+      (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+        (when (null record)
+          (return))
+        (unless (eq record (first records))
+          (push record records))
+        (let ((taken (min accept (- end start))))
+          (loop for i from start below (+ start taken)
+                do (vector-push-extend (aref record i) received))
+          (pure-tls::record-layer-ack-output layer taken))))
+    (values (coerce received '(simple-array (unsigned-byte 8) (*)))
+            (nreverse records))))
+
+(test outbound-record-resumes-from-the-ciphertext-it-already-produced
+  "A part-sent record continues octet for octet out of the ciphertext already
+   framed, and the write sequence number advances exactly once for that record.
+
+   Resuming any other way means encrypting the fragment a second time.  That
+   either reuses the nonce the first attempt spent, which costs confidentiality
+   outright rather than just the connection, or spends the next one and leaves
+   the peer counting behind us.  Nothing here encrypts a fragment twice: what is
+   shown is that the span offered after a partial acknowledgement is the tail of
+   the same vector, and that the counter stands still while it is handed out."
+  (let* ((cipher (outbound-cipher))
+         (layer (outbound-layer cipher :max-send-fragment 16))
+         (payload (counting-payload 16)))
+    (is (null (pure-tls::record-layer-stream layer))
+        "This path works for a caller that has no stream to give the layer")
+    (is (zerop (outbound-sequence-number layer))
+        "A fresh cipher has spent no sequence number yet")
+    (is (= 16 (pure-tls::record-layer-submit-plaintext
+               layer pure-tls::+content-type-application-data+ payload))
+        "Submitting should stage every octet it was given")
+    (is (zerop (outbound-sequence-number layer))
+        "Submitting stages plaintext and encrypts nothing")
+    (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+      (is (not (null record))
+          "The layer should offer the record it framed")
+      (is (= 0 start)
+          "A freshly framed record starts at its first octet")
+      (is (= (length record) end)
+          "and runs to its last")
+      (is (= 1 (outbound-sequence-number layer))
+          "Framing one record costs exactly one sequence number")
+      (is (= pure-tls::+content-type-application-data+ (aref record 0))
+          "An encrypted record goes out under the application_data outer type")
+      (is (= (- end 5) (+ (ash (aref record 3) 8) (aref record 4)))
+          "and its header declares the body length that follows it")
+      (let ((framed (copy-seq record)))
+        ;; The transport takes seven octets this time round and no more.
+        (is (= (- end 7) (pure-tls::record-layer-ack-output layer 7))
+            "The rest of the record should still be outstanding")
+        (is (= 1 (outbound-sequence-number layer))
+            "Acknowledging part of a record must not encrypt anything")
+        (multiple-value-bind (again from to) (pure-tls::record-layer-pending-output layer)
+          (is (eq record again)
+              "The resumed record should be the very vector already produced")
+          (is (= 7 from)
+              "and should pick up where the transport stopped, not start again")
+          (is (= end to)
+              "and still end where it ended")
+          (is (= 1 (outbound-sequence-number layer))
+              "Resuming must not advance the write sequence number")
+          (is (equalp (subseq framed 7) (subseq again from to))
+              "The resumed span should continue the same ciphertext"))
+        ;; Finish the record, then check what the transport saw end to end.
+        (let ((received (concatenate '(vector (unsigned-byte 8))
+                                     (subseq framed 0 7)
+                                     (drain-outbound layer 5))))
+          (is (equalp framed received)
+              "Across the short writes the transport should receive the record
+               exactly once, in order, with nothing repeated and nothing skipped")
+          (is (= 1 (outbound-sequence-number layer))
+              "and the whole record should have cost one sequence number")
+          (is (not (pure-tls::record-layer-output-pending-p layer))
+              "A fully acknowledged submission leaves nothing pending")
+          (is (null (pure-tls::record-layer-out-source layer))
+              "and the layer lets go of the caller's buffer"))))))
+
+(test outbound-submission-is-fragmented-one-record-per-sequence-number
+  "A submission larger than the fragment limit goes out as several records, each
+   costing one sequence number, and a stingy transport receives all of them
+   whole and in order."
+  (let* ((cipher (outbound-cipher))
+         (layer (outbound-layer cipher :max-send-fragment 16))
+         (payload (counting-payload 40)))
+    (pure-tls::record-layer-submit-plaintext
+     layer pure-tls::+content-type-application-data+ payload)
+    (multiple-value-bind (received records) (drain-outbound layer 3)
+      (is (= 3 (length records))
+          "Forty octets at sixteen to a record makes three records")
+      (is (= 3 (outbound-sequence-number layer))
+          "and three records cost three sequence numbers, one each")
+      (dolist (record records)
+        (is (= pure-tls::+content-type-application-data+ (aref record 0))
+            "Every encrypted record goes out under the application_data type")
+        (is (= (- (length record) 5) (+ (ash (aref record 3) 8) (aref record 4)))
+            "and declares the body length that follows its header"))
+      (is (equalp (apply #'concatenate '(vector (unsigned-byte 8)) records)
+                  received)
+          "The transport should receive exactly the records the layer framed")
+      (is (not (pure-tls::record-layer-output-pending-p layer))
+          "and the layer should be idle once they have all been acknowledged"))))
+
+(test outbound-submit-refuses-to-replace-a-draining-submission
+  "A second submission is refused while the first is still draining, at both
+   points where one could turn up: before any record has been framed, and with a
+   record half way out to the transport.  Taking it would drop octets the peer
+   is already owed, in the middle of a record it has begun receiving, and the
+   layer has no way to tell the peer that the rest is not coming."
+  (let* ((cipher (outbound-cipher))
+         (layer (outbound-layer cipher :max-send-fragment 16))
+         (staged (counting-payload 40))
+         (other (counting-payload 8)))
+    (is (= 40 (pure-tls::record-layer-submit-plaintext
+               layer pure-tls::+content-type-application-data+ staged)))
+    (signals pure-tls::tls-output-in-flight
+      (pure-tls::record-layer-submit-plaintext
+       layer pure-tls::+content-type-application-data+ other))
+    (let ((acked (multiple-value-bind (record start end)
+                     (pure-tls::record-layer-pending-output layer)
+                   (declare (ignore record start))
+                   (let ((half (floor end 2)))
+                     (is (plusp (pure-tls::record-layer-ack-output layer half))
+                         "Half a record out leaves the other half outstanding")
+                     half))))
+      (signals pure-tls::tls-output-in-flight
+        (pure-tls::record-layer-submit-plaintext
+         layer pure-tls::+content-type-application-data+ other))
+      (multiple-value-bind (received records) (drain-outbound layer 64)
+        (is (= 3 (length records))
+            "The refusals should leave the staged submission exactly as it was")
+        (is (= 3 (outbound-sequence-number layer))
+            "and should cost no extra sequence number")
+        (is (= (- (reduce #'+ records :key #'length) acked) (length received))
+            "The transport receives the rest of the part-sent record and both of
+             the records after it, and nothing twice")))
+    (is (= 8 (pure-tls::record-layer-submit-plaintext
+              layer pure-tls::+content-type-application-data+ other))
+        "A drained layer takes the next submission")))
+
+(test outbound-acknowledgement-past-the-end-of-the-span-is-refused
+  "An acknowledgement bigger than what was handed out is refused rather than
+   believed, and a refused one leaves the cursor where it was.  This cursor is
+   the only thing that decides where a resumed record continues from, so a count
+   that runs past the end skips ciphertext the peer needs and one that falls
+   short repeats octets it has already had."
+  (let* ((cipher (outbound-cipher))
+         (layer (outbound-layer cipher :max-send-fragment 16))
+         (payload (counting-payload 16)))
+    (signals pure-tls::tls-output-ack-overrun
+      (pure-tls::record-layer-ack-output layer 1))
+    (is (zerop (pure-tls::record-layer-ack-output layer 0))
+        "Acknowledging nothing when nothing is outstanding is not an error")
+    (signals type-error
+      (pure-tls::record-layer-ack-output layer -1))
+    (pure-tls::record-layer-submit-plaintext
+     layer pure-tls::+content-type-application-data+ payload)
+    (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+      (declare (ignore record start))
+      (signals pure-tls::tls-output-ack-overrun
+        (pure-tls::record-layer-ack-output layer (1+ end)))
+      (is (= end (pure-tls::record-layer-ack-output layer 0))
+          "A refused acknowledgement should not have moved the cursor")
+      (is (= (- end 4) (pure-tls::record-layer-ack-output layer 4))
+          "A count within the span advances it")
+      (signals pure-tls::tls-output-ack-overrun
+        (pure-tls::record-layer-ack-output layer (- end 3)))
+      (is (= (- end 4) (pure-tls::record-layer-ack-output layer 0))
+          "and the cursor still stands where the transport left it")
+      (multiple-value-bind (again from to) (pure-tls::record-layer-pending-output layer)
+        (declare (ignore again to))
+        (is (= 4 from)
+            "so the record resumes from the last count the layer believed")))))
+
+(test outbound-records-without-a-cipher-carry-their-own-content-type
+  "Before keys are installed a framed record goes out in the clear under the
+   content type it was submitted with, which is what the handshake needs."
+  (let ((layer (pure-tls::make-record-layer nil :max-send-fragment 4))
+        (payload (counting-payload 6)))
+    (pure-tls::record-layer-submit-plaintext
+     layer pure-tls::+content-type-handshake+ payload)
+    (multiple-value-bind (received records) (drain-outbound layer 2)
+      (is (= 2 (length records))
+          "Six octets at four to a record makes two records")
+      (dolist (record records)
+        (is (= pure-tls::+content-type-handshake+ (aref record 0))
+            "An unencrypted record carries the submitted content type itself"))
+      (is (equalp payload
+                  (concatenate '(vector (unsigned-byte 8))
+                               (subseq (first records) 5)
+                               (subseq (second records) 5)))
+          "and the bodies are the submitted octets, split at the fragment limit")
+      (is (= 16 (length received))
+          "Two headers and six octets of payload reach the transport"))))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

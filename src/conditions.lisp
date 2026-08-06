@@ -215,6 +215,36 @@
    Serving the new record first would hand the caller octets out of the order the
    peer sent them, so the read is refused rather than silently reordered."))
 
+(define-condition tls-output-in-flight (tls-record-error)
+  ((outstanding :initarg :outstanding
+                :initform 0
+                :reader tls-output-in-flight-outstanding))
+  (:report (lambda (condition stream)
+             (format stream
+                     "TLS record layer still has ~D octet~:P of the previous ~
+                      submission to hand out; it cannot take another."
+                     (tls-output-in-flight-outstanding condition))))
+  (:documentation "Plaintext was submitted while an earlier submission was still draining.
+   Accepting it would drop whatever the layer had not yet handed to the transport,
+   so the submission is refused and the caller keeps its payload."))
+
+(define-condition tls-output-ack-overrun (tls-record-error)
+  ((acknowledged :initarg :acknowledged
+                 :initform 0
+                 :reader tls-output-ack-overrun-acknowledged)
+   (outstanding :initarg :outstanding
+                :initform 0
+                :reader tls-output-ack-overrun-outstanding))
+  (:report (lambda (condition stream)
+             (format stream
+                     "Transport acknowledged ~D octet~:P of a TLS record with only ~
+                      ~D outstanding."
+                     (tls-output-ack-overrun-acknowledged condition)
+                     (tls-output-ack-overrun-outstanding condition))))
+  (:documentation "More octets were acknowledged than the layer had given out.
+   The count decides where a resumed record continues from, so a wrong one either
+   repeats ciphertext or skips it; both reach the peer as a corrupt record."))
+
 ;;;; Crypto Errors
 
 (define-condition tls-crypto-error (tls-error)

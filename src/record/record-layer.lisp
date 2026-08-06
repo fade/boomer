@@ -534,6 +534,192 @@
               do (record-layer-write layer content-type data
                                      :start s :end (min end (+ s max-size)))))))
 
+;;;; Sending Records Without a Stream
+;;;
+;;; The writers above hand a record to a stream and return once the stream has
+;;; taken all of it.  A caller driven by an event loop has no stream and cannot
+;;; wait: it asks what it should try to send, sends whatever the transport
+;;; happens to accept this time round, and comes back later for the rest.  The
+;;; functions below are the whole of that interface, and like the inbound pair
+;;; they speak in octets and spans rather than in anything the caller could
+;;; mistake for a connection.
+;;;
+;;; Nothing above changes.  RECORD-LAYER-WRITE and RECORD-LAYER-WRITE-FRAGMENTED
+;;; still encrypt straight to the stream, which is what every existing caller
+;;; does and what the Gray stream needs.
+
+(defun record-layer-output-pending-p (layer)
+  "True while LAYER still owes the transport octets from an earlier submission."
+  (declare (type record-layer layer))
+  (or (and (record-layer-out-record layer) t)
+      (< (record-layer-out-start layer) (record-layer-out-end layer))))
+
+(defun record-layer-output-remaining (layer)
+  "How many octets LAYER has still to hand out for the current submission.
+
+   This is a diagnostic total rather than a wire count: the part of it that is
+   already framed is ciphertext, and the rest is plaintext that has not been cut
+   into records yet, so encryption and padding will change what the second part
+   finally weighs."
+  (declare (type record-layer layer))
+  (+ (let ((record (record-layer-out-record layer)))
+       (if record
+           (- (length record) (record-layer-out-record-sent layer))
+           0))
+     (- (record-layer-out-end layer) (record-layer-out-start layer))))
+
+(defun record-layer-submit-plaintext (layer content-type data
+                                      &key (start 0) (end (length data)))
+  "Stage DATA[start,end) to go out as records of CONTENT-TYPE.  Returns how many
+   octets were staged.
+
+   The layer keeps a reference to DATA and cuts records from it as the transport
+   takes them, so the caller must leave those octets alone until the layer has
+   drained.  Nothing is encrypted here.  The first fragment is produced by
+   RECORD-LAYER-PENDING-OUTPUT and not before, so a submission that is never
+   asked for costs no sequence number.
+
+   Signals TLS-OUTPUT-IN-FLIGHT rather than replacing a submission that has not
+   finished draining.  Replacing one would drop octets the peer is already owed,
+   in the middle of a record it has started receiving, and the layer has no way
+   to tell the peer that the rest is not coming.
+
+   An empty span stages nothing and produces no record."
+  (declare (type record-layer layer)
+           (type octet-vector data))
+  (unless (<= 0 start end (length data))
+    (error "record-layer-submit-plaintext: [~D,~D) lies outside a buffer of ~D octets."
+           start end (length data)))
+  (when (record-layer-output-pending-p layer)
+    (error 'tls-output-in-flight
+           :content-type (record-layer-out-content-type layer)
+           :outstanding (record-layer-output-remaining layer)))
+  (setf (record-layer-out-source layer) data
+        (record-layer-out-start layer) start
+        (record-layer-out-end layer) end
+        (record-layer-out-content-type layer) content-type)
+  (- end start))
+
+(defun record-layer-frame-next-record (layer)
+  "Cut the next fragment out of LAYER's submission and frame it as one whole
+   wire record, header and body together.  Returns the record, or NIL once the
+   submission is spent.
+
+   This is the one place on this path where the write cipher's sequence number
+   advances, and it advances once per record.  Everything downstream works from
+   the octets returned here and never encrypts again, which is why anything that
+   can refuse the fragment is checked before the cipher is touched: a refusal
+   after encryption would have spent a sequence number on a record that never
+   goes out, and the peer would count differently from us for the rest of the
+   connection."
+  (declare (type record-layer layer))
+  (let ((source (record-layer-out-source layer))
+        (from (record-layer-out-start layer))
+        (to (record-layer-out-end layer)))
+    (declare (type fixnum from to))
+    (when (or (null source) (>= from to))
+      ;; Spent.  Release the caller's vector rather than keep an exhausted
+      ;; reference to it, so a drained layer holds nothing of theirs.
+      (setf (record-layer-out-source layer) nil
+            (record-layer-out-start layer) 0
+            (record-layer-out-end layer) 0)
+      (return-from record-layer-frame-next-record nil))
+    (let ((limit (min (record-layer-max-send-fragment layer)
+                      (record-layer-max-out-plaintext layer)))
+          (content-type (record-layer-out-content-type layer))
+          (cipher (record-layer-write-cipher layer)))
+      (declare (type fixnum limit))
+      (when (< limit 1)
+        (error "record-layer-pending-output: a fragment limit of ~D octets can carry nothing."
+               limit))
+      (let ((stop (min to (+ from limit))))
+        (declare (type fixnum stop))
+        (multiple-value-bind (body body-start body-end outer-type)
+            (if cipher
+                (let ((encrypted (tls13-encrypt-record cipher content-type source
+                                                       :start from :end stop)))
+                  (values encrypted 0 (length encrypted)
+                          +content-type-application-data+))
+                (values source from stop content-type))
+          (let* ((body-length (- body-end body-start))
+                 (record (make-octet-vector (+ 5 body-length))))
+            (declare (type fixnum body-length))
+            (setf (aref record 0) outer-type
+                  (aref record 1) (ldb (byte 8 8) +tls-1.2+)
+                  (aref record 2) (ldb (byte 8 0) +tls-1.2+)
+                  (aref record 3) (ldb (byte 8 8) body-length)
+                  (aref record 4) (ldb (byte 8 0) body-length))
+            (replace record body :start1 5 :start2 body-start :end2 body-end)
+            (setf (record-layer-out-start layer) stop
+                  (record-layer-out-record layer) record
+                  (record-layer-out-record-sent layer) 0)
+            record))))))
+
+(defun record-layer-pending-output (layer)
+  "The octets LAYER wants the transport to send, as (VALUES vector start end).
+
+   Returns (VALUES NIL 0 0) when there is nothing to send.  Otherwise the span
+   is the unacknowledged tail of one whole wire record, and the caller sends as
+   much of it as the transport will take, then says how much that was with
+   RECORD-LAYER-ACK-OUTPUT.  Asking again without acknowledging anything returns
+   the same span: a record is framed once and then held until it has all gone.
+
+   A fragment is cut and encrypted here only when no record is outstanding and
+   the submission still has plaintext left.  Its size is the smaller of
+   MAX-SEND-FRAGMENT and the layer's MAX-OUT-PLAINTEXT budget.
+
+   The vector belongs to the layer and its contents must not be modified.  It is
+   the only copy of that ciphertext there will ever be, because encryption is
+   not repeatable: the sequence number that produced it has already advanced,
+   and re-encrypting the fragment to try again either reuses the nonce this
+   record spent or burns the next one and leaves the peer counting differently.
+   A short write is resumed from these octets or not at all."
+  (declare (type record-layer layer))
+  (let ((record (or (record-layer-out-record layer)
+                    (record-layer-frame-next-record layer))))
+    (if (null record)
+        (values nil 0 0)
+        (values record (record-layer-out-record-sent layer) (length record)))))
+
+(defun record-layer-ack-output (layer count)
+  "Tell LAYER that the transport accepted COUNT octets of the span it handed out.
+   Returns how many octets of the current record are still outstanding.
+
+   The cursor advances by COUNT, and once the last octet of a record is
+   acknowledged the record is released so the next fragment can be framed.
+   Until then RECORD-LAYER-PENDING-OUTPUT keeps offering the rest of the same
+   ciphertext, continuing from exactly where this left off.
+
+   Signals TLS-OUTPUT-ACK-OVERRUN for a count larger than what was outstanding,
+   including any count at all when nothing was.  This cursor is the only thing
+   that decides where a resumed record continues from: a count that is too large
+   skips ciphertext the peer needs, and one that is too small repeats octets it
+   has already had.  Either way the peer sees a record that will not
+   authenticate, and it reads as the connection being tampered with rather than
+   as a miscounted write."
+  (declare (type record-layer layer))
+  (check-type count (integer 0))
+  (let* ((record (record-layer-out-record layer))
+         (sent (record-layer-out-record-sent layer))
+         (size (if record (length record) 0))
+         (outstanding (- size sent)))
+    (declare (type fixnum sent size outstanding))
+    (when (> count outstanding)
+      (error 'tls-output-ack-overrun
+             :content-type (record-layer-out-content-type layer)
+             :acknowledged count
+             :outstanding outstanding))
+    (let ((now (+ sent count)))
+      (declare (type fixnum now))
+      (cond ((null record) 0)
+            ((= now size)
+             (setf (record-layer-out-record layer) nil
+                   (record-layer-out-record-sent layer) 0)
+             0)
+            (t
+             (setf (record-layer-out-record-sent layer) now)
+             (- size now))))))
+
 ;;;; Alert Processing
 
 (defun process-alert (content &optional record-layer)

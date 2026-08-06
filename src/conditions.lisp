@@ -245,6 +245,26 @@
    The count decides where a resumed record continues from, so a wrong one either
    repeats ciphertext or skips it; both reach the peer as a corrupt record."))
 
+;;;; Stream Ownership Errors
+
+(define-condition tls-stream-spent (tls-error)
+  ((operation :initarg :operation
+              :initform nil
+              :reader tls-stream-spent-operation))
+  (:report (lambda (condition stream)
+             (format stream
+                     "TLS stream is spent: its transport and its ciphers were ~
+                      handed to a record layer~@[, so ~A on it is refused~]."
+                     (tls-stream-spent-operation condition))))
+  (:documentation "An operation was attempted on a stream whose ownership has moved.
+   Adoption gives the new record layer the stream's live AEAD ciphers and its
+   transport, both by reference, so the stream and the layer are two users of one
+   pair of sequence numbers and one socket.  A read or a write through the stream
+   after that advances a counter the layer is also advancing, which leaves the two
+   ends of the connection counting differently, and closing it takes the transport
+   away from an owner that is still using it.  The stream refuses rather than
+   letting either happen quietly."))
+
 ;;;; Crypto Errors
 
 (define-condition tls-crypto-error (tls-error)

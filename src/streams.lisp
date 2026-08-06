@@ -42,6 +42,12 @@
     :initform nil
     :accessor tls-stream-closed-p
     :documentation "Whether the stream has been closed.")
+   (spent
+    :initform nil
+    :accessor tls-stream-spent-p
+    :documentation "Whether this stream's transport and ciphers have been handed to
+    an adopted record layer.  Distinct from CLOSED: closed says the connection is
+    over, spent says it is alive and belongs to something else now.")
    (close-callback
     :initarg :close-callback
     :initform nil
@@ -79,6 +85,22 @@
   (setf (tls-stream-output-buffer stream)
         (make-octet-vector buffer-size)))
 
+;;;; Ownership
+
+;;; Adoption hands a record layer the stream's ciphers and its transport, and
+;;; both go across by reference.  What is left behind is a stream object that
+;;; still has accessors for all of it and no longer owns any of it, so the
+;;; question every entry point has to ask first is whether it is still the owner
+;;; of what it is about to use.
+
+(defun check-tls-stream-unspent (stream operation)
+  "Refuse OPERATION unless STREAM still owns its transport and its ciphers.
+
+   OPERATION names the entry point for the report, so a caller reading the error
+   can see which call it was rather than only that one of them was refused."
+  (when (tls-stream-spent-p stream)
+    (error 'tls-stream-spent :operation operation)))
+
 ;;;; Stream Methods
 
 (defmethod stream-element-type ((stream tls-stream))
@@ -89,22 +111,30 @@
 
 (defmethod close ((stream tls-stream) &key abort)
   (unless (tls-stream-closed-p stream)
-    ;; Flush pending output unless aborting
-    (unless abort
-      (force-output stream))
-    ;; Send close_notify alert and flush to ensure it's sent before closing
-    (unless abort
+    ;; A spent stream shuts down as a stream object and does nothing to the
+    ;; connection.  The write cipher and the transport belong to the record
+    ;; layer that took them: encrypting a close_notify would spend a sequence
+    ;; number the layer is still counting from, and closing the transport would
+    ;; end a connection its new owner is still using.  Neither is this stream's
+    ;; to do, and the caller closing what it is holding should not have to know
+    ;; that.
+    (unless (tls-stream-spent-p stream)
+      ;; Flush pending output unless aborting
+      (unless abort
+        (force-output stream))
+      ;; Send close_notify alert and flush to ensure it's sent before closing
+      (unless abort
+        (handler-case
+            (progn
+              (record-layer-write-alert (tls-stream-record-layer stream)
+                                        +alert-level-warning+
+                                        +alert-close-notify+)
+              (force-output (tls-stream-underlying-stream stream)))
+          (error () nil)))  ; Ignore errors during shutdown
+      ;; Close underlying stream (ignore errors - peer may have already closed)
       (handler-case
-          (progn
-            (record-layer-write-alert (tls-stream-record-layer stream)
-                                      +alert-level-warning+
-                                      +alert-close-notify+)
-            (force-output (tls-stream-underlying-stream stream)))
-        (error () nil)))  ; Ignore errors during shutdown
-    ;; Close underlying stream (ignore errors - peer may have already closed)
-    (handler-case
-        (close (tls-stream-underlying-stream stream) :abort abort)
-      (error () nil))
+          (close (tls-stream-underlying-stream stream) :abort abort)
+        (error () nil)))
     ;; Mark as closed
     (setf (tls-stream-closed-p stream) t)
     ;; Call close callback
@@ -327,6 +357,7 @@
      (tls-stream-input-position stream)))
 
 (defmethod stream-read-byte ((stream tls-stream))
+  (check-tls-stream-unspent stream "reading a byte")
   ;; Check request context for deadline/cancellation
   (let ((record-layer (tls-stream-record-layer stream)))
     (when record-layer
@@ -347,6 +378,7 @@
       :eof))
 
 (defmethod stream-read-sequence ((stream tls-stream) sequence start end &key)
+  (check-tls-stream-unspent stream "reading a sequence")
   ;; Check request context for deadline/cancellation
   (let ((record-layer (tls-stream-record-layer stream)))
     (when record-layer
@@ -432,26 +464,49 @@
 
    The inbound plaintext cannot be supplied by the caller, because supplying it
    and taking it from STREAM are two answers to the same question and there is
-   no reading of the connection in which both are right."
+   no reading of the connection in which both are right.
+
+   STREAM is left spent, because everything it would need in order to read, to
+   write or to close now belongs to the returned layer.  Any later use of it
+   signals TLS-STREAM-SPENT rather than acting on state it no longer owns.  A
+   handover that fails leaves STREAM exactly as it was and usable, since nothing
+   took what it is holding."
   (loop for key in keys by #'cddr
         when (member key '(:in-plaintext :in-plaintext-start))
           do (error "adopt-record-layer-from-tls-stream: ~S comes from STREAM and cannot be passed in."
                     key))
-  (let ((layer (tls-stream-record-layer stream)))
+  (let ((layer (tls-stream-record-layer stream))
+        (buffer (tls-stream-input-buffer stream))
+        (position (tls-stream-input-position stream))
+        (adopted nil))
     (multiple-value-bind (plaintext plaintext-start)
         (tls-stream-detach-input-plaintext stream)
-      (apply #'adopt-record-layer
-             (tls-stream-underlying-stream stream)
-             :read-cipher (record-layer-read-cipher layer)
-             :write-cipher (record-layer-write-cipher layer)
-             :cipher-suite (record-layer-cipher-suite layer)
-             :in-plaintext plaintext
-             :in-plaintext-start plaintext-start
-             keys))))
+      (unwind-protect
+           (setf adopted
+                 (apply #'adopt-record-layer
+                        (tls-stream-underlying-stream stream)
+                        :read-cipher (record-layer-read-cipher layer)
+                        :write-cipher (record-layer-write-cipher layer)
+                        :cipher-suite (record-layer-cipher-suite layer)
+                        :in-plaintext plaintext
+                        :in-plaintext-start plaintext-start
+                        keys))
+        (unless adopted
+          ;; No layer was built, so nothing took the plaintext and STREAM is
+          ;; still its only holder.  Put it back where the detach found it,
+          ;; rather than leaving a stream that a reader can still use but that
+          ;; has quietly lost octets the peer sent.
+          (setf (tls-stream-input-buffer stream) buffer
+                (tls-stream-input-position stream) position))))
+    ;; Last, and only now that the layer exists.  Marking any earlier would spend
+    ;; a stream that a failed handover leaves as the only owner of the connection.
+    (setf (tls-stream-spent-p stream) t)
+    adopted))
 
 ;;;; Output Methods
 
 (defmethod stream-write-byte ((stream tls-stream) byte)
+  (check-tls-stream-unspent stream "writing a byte")
   (when (tls-stream-closed-p stream)
     (error 'tls-error :message "Cannot write to closed stream"))
   (let ((buf (tls-stream-output-buffer stream))
@@ -464,6 +519,7 @@
   byte)
 
 (defmethod stream-write-sequence ((stream tls-stream) sequence start end &key)
+  (check-tls-stream-unspent stream "writing a sequence")
   (when (tls-stream-closed-p stream)
     (error 'tls-error :message "Cannot write to closed stream"))
   (loop while (< start end)
@@ -483,6 +539,7 @@
   sequence)
 
 (defmethod stream-force-output ((stream tls-stream))
+  (check-tls-stream-unspent stream "flushing output")
   (when (plusp (tls-stream-output-position stream))
     ;; Pass the pending region of the output buffer directly; the record layer
     ;; bounds it with :end, so no subseq copy of the payload is made per flush.

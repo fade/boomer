@@ -803,6 +803,37 @@
     (is (equalp (pure-tls::concat-octet-vectors first second)
                 (coerce buffer '(vector (unsigned-byte 8)))))))
 
+(test structures-holding-live-key-material-have-no-copier
+  "The generated copier is suppressed on the two structures where duplicating
+   the object repeats a nonce under a key that is already in use.
+
+   COPY-AEAD-CIPHER would return a second cipher carrying the same key, the same
+   implicit nonce and the same sequence number, and the per-record nonce is a
+   function of exactly those three.  Encrypting one message through each object
+   therefore puts two different plaintexts under one key and one nonce, which is
+   a loss of confidentiality reachable from a single extra call on one thread.
+   COPY-RECORD-LAYER would hand out a second layer sharing that same cipher
+   pair, so the two ends of the connection stop agreeing on how many records
+   have gone by, and it aliases the record buffers as well.
+
+   Checked by name, because the failure cannot honestly be demonstrated: showing
+   it means performing the nonce reuse."
+  (dolist (name '("COPY-AEAD-CIPHER" "COPY-RECORD-LAYER"))
+    (let ((symbol (find-symbol name "PURE-TLS")))
+      (is (not (and symbol (fboundp symbol)))
+          "~A must not exist; no correct copy of a live cipher, or of a live ~
+           record layer, can be written."
+          name)))
+  ;; The control: suppressing the copier is not the same as breaking the
+  ;; structure, and the ordinary constructors still work.
+  (let ((cipher (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
+                                     (pure-tls::make-octet-vector 16)
+                                     (pure-tls::make-octet-vector 12))))
+    (is (pure-tls::aead-cipher-p cipher)
+        "MAKE-AEAD still builds a cipher")
+    (is (zerop (pure-tls::aead-cipher-sequence-number cipher))
+        "starting, as a fresh cipher must, from sequence number zero")))
+
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
   (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")

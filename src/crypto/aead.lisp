@@ -12,7 +12,33 @@
 
 ;;;; AEAD Cipher Interface
 
-(defstruct aead-cipher
+;;; No copier is generated, because no correct copy of a live cipher exists,
+;;; and both ways of writing one break confidentiality rather than merely
+;;; misbehaving.
+;;;
+;;; A shallow copy hands back a second object holding the same key, the same
+;;; implicit nonce and the same sequence number.  The per-record nonce is that
+;;; sequence number XORed into the implicit nonce, so two objects agreeing on
+;;; all three produce the same nonce, and encrypting two different plaintexts
+;;; under one key and one nonce is a direct loss of confidentiality.  Nothing
+;;; has to race for that: two calls in sequence, one through each object, are
+;;; enough.
+;;;
+;;; A deep copy arrives at the same place by another route.  Copying the key
+;;; and IV octets rather than sharing them still leaves two ciphers standing at
+;;; the same sequence number with the same key material, so the nonces they go
+;;; on to produce are the same nonces.
+;;;
+;;; What a caller reaching for a copier usually wants is either a fresh cipher,
+;;; which MAKE-AEAD builds from key material with the sequence number at zero,
+;;; or the same cipher shared by reference, which is what handing a live
+;;; connection to another owner requires.
+;;;
+;;; This closes the route a reader would take without thinking about it.
+;;; CL:COPY-STRUCTURE still reaches the object, and there is no way to stop it;
+;;; what the suppression buys is that arriving there takes a deliberate call
+;;; rather than the obvious one.
+(defstruct (aead-cipher (:copier nil))
   "Abstract AEAD cipher state."
   (key nil :type (or null octet-vector))
   (implicit-nonce nil :type (or null octet-vector))

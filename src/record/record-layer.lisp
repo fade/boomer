@@ -146,7 +146,27 @@
 (defconstant +max-ccs-messages+ 32
   "Maximum number of change_cipher_spec messages allowed (DoS protection).")
 
-(defstruct (record-layer (:constructor %make-record-layer))
+;;; No copier is generated, because a record layer has no correct copy either,
+;;; and the two ways of writing one fail differently.
+;;;
+;;; A shallow copy gives two layers over one pair of AEAD ciphers.  Both
+;;; advance the same two sequence numbers, so each layer counts records the
+;;; other one sent: the peer's numbering matches neither, and every record
+;;; after the first fails to authenticate.  Under concurrency the two can also
+;;; reach the same number before either increments it, which is nonce reuse.
+;;; The same copy aliases the mutable buffers and cursors as well, IN-BODY,
+;;; IN-PLAINTEXT, OUT-RECORD and OUT-SOURCE among them, so two layers would
+;;; assemble records into one buffer and interleave what they produce.
+;;;
+;;; A deep copy removes the aliasing and keeps the worse half: two ciphers
+;;; holding the same key at the same sequence number produce the same nonces,
+;;; which is nonce reuse by another route.
+;;;
+;;; A caller wanting a second layer over the same connection wants the same
+;;; layer shared by reference.  A caller wanting a layer of its own wants
+;;; MAKE-RECORD-LAYER, or ADOPT-RECORD-LAYER when the ciphers are already live.
+(defstruct (record-layer (:constructor %make-record-layer)
+                         (:copier nil))
   "TLS record layer state."
   (read-cipher nil :type (or null aead-cipher))
   (write-cipher nil :type (or null aead-cipher))

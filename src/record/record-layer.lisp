@@ -325,6 +325,63 @@
                       :in-plaintext in-plaintext
                       :in-plaintext-start in-plaintext-start))
 
+;;; Serving the plaintext held in IN-PLAINTEXT.
+;;;
+;;; The two functions below are the whole of a reader's interface to it, and
+;;; they are deliberately stated in terms of octets and a caller-owned
+;;; destination.  A reader driven by an event loop has no Gray stream to read
+;;; through and no way to block, so it cannot be handed a stream; it wakes with
+;;; a buffer it already owns, asks how much is there, and takes what fits.
+;;;
+;;; TAKE writes into that buffer rather than returning a fresh vector.  The
+;;; caller almost always has somewhere for the octets to go already, and this
+;;; path runs once per wakeup on every connection, so returning a vector would
+;;; put an allocation on it that the caller immediately copies out of and
+;;; discards.  It also makes partial consumption the ordinary case rather than a
+;;; special one: the caller states how much room it has, and the cursor advances
+;;; by exactly what was written.
+
+(defun record-layer-plaintext-available (layer)
+  "How many decrypted octets LAYER is holding that no reader has taken yet."
+  (declare (type record-layer layer))
+  (let ((held (record-layer-in-plaintext layer)))
+    (if held
+        (- (length held) (record-layer-in-plaintext-start layer))
+        0)))
+
+(defun record-layer-take-plaintext (layer buffer &key (start 0) (end (length buffer)))
+  "Move LAYER's held plaintext into BUFFER between START and END.
+
+   Writes as many octets as will fit, advances the cursor past them, and returns
+   how many were written.  A return of zero means the layer is holding nothing,
+   which is a normal answer rather than an error: it is what a reader sees once
+   it has drained the handover and has to wait on the transport for more.
+
+   Draining releases the vector instead of leaving an exhausted one behind, so
+   the layer stops holding decrypted octets the moment the last of them is taken
+   and an empty layer has one representation rather than two."
+  (declare (type record-layer layer)
+           (type octet-vector buffer))
+  (unless (<= 0 start end (length buffer))
+    (error "record-layer-take-plaintext: [~D,~D) lies outside a buffer of ~D octets."
+           start end (length buffer)))
+  (let ((held (record-layer-in-plaintext layer)))
+    (if (null held)
+        0
+        (let* ((from (record-layer-in-plaintext-start layer))
+               (available (- (length held) from))
+               (taken (min available (- end start))))
+          (declare (type fixnum from available taken))
+          (when (plusp taken)
+            (replace buffer held
+                     :start1 start :end1 (+ start taken)
+                     :start2 from :end2 (+ from taken)))
+          (if (= taken available)
+              (setf (record-layer-in-plaintext layer) nil
+                    (record-layer-in-plaintext-start layer) 0)
+              (setf (record-layer-in-plaintext-start layer) (+ from taken)))
+          taken))))
+
 (defun record-layer-install-keys (layer direction key iv cipher-suite)
   "Install encryption keys for the specified direction (:read or :write)."
   (let ((cipher (make-aead cipher-suite key iv)))

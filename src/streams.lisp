@@ -386,6 +386,69 @@
   (or (plusp (tls-stream-buffer-remaining stream))
       (listen (tls-stream-underlying-stream stream))))
 
+;;;; Handing a finished connection to an adopted record layer
+
+;;; The handshake runs blocking, on a thread, through the Gray stream above.
+;;; When the connection is handed to an event loop for its data phase, the
+;;; record layer takes over ownership of inbound plaintext, because a loop
+;;; reader has no thread and no dynamic extent to keep that state on and needs
+;;; it resident on the connection instead.  The Gray stream keeps its own input
+;;; buffer for its own phase, where a thread and a stack are exactly what it
+;;; has.  Two buffers, because the two phases hold state in different places.
+;;;
+;;; This lives on the stream side rather than in the record layer because only
+;;; the stream side knows what a Gray stream is.  The record layer is given
+;;; octets and an offset and stays free of any notion of where they came from.
+
+(defun tls-stream-detach-input-plaintext (stream)
+  "Take the decrypted octets STREAM has buffered but not yet handed to a reader.
+
+   Returns the vector holding them and the index of the first one, or NIL and
+   zero when nothing is outstanding.  STREAM is left with an empty input buffer,
+   so afterwards the octets exist in one place and can be delivered once.
+
+   What is outstanding is the tail from TLS-STREAM-INPUT-POSITION to the end of
+   TLS-STREAM-INPUT-BUFFER, never the whole buffer.  The part in front of the
+   position is what the application has already read.  Passing the whole buffer
+   on would deliver that part a second time and passing nothing would drop the
+   tail, and either one reaches the peer as a run of application octets that
+   does not match what was sent.  That surfaces as the peer breaking protocol,
+   with nothing pointing back at the handover, so the position travels with the
+   vector rather than being flattened away by copying the tail out."
+  (let ((buffer (tls-stream-input-buffer stream))
+        (position (tls-stream-input-position stream)))
+    (setf (tls-stream-input-buffer stream) (make-octet-vector 0)
+          (tls-stream-input-position stream) 0)
+    (if (< position (length buffer))
+        (values buffer position)
+        (values nil 0))))
+
+(defun adopt-record-layer-from-tls-stream (stream &rest keys)
+  "Build a record layer for the data phase from the finished blocking STREAM.
+
+   The live AEAD ciphers, the transport and the plaintext STREAM has buffered
+   but not yet handed out all move across, and STREAM is left holding no inbound
+   plaintext.  Remaining KEYS are passed to ADOPT-RECORD-LAYER unchanged.
+
+   The inbound plaintext cannot be supplied by the caller, because supplying it
+   and taking it from STREAM are two answers to the same question and there is
+   no reading of the connection in which both are right."
+  (loop for key in keys by #'cddr
+        when (member key '(:in-plaintext :in-plaintext-start))
+          do (error "adopt-record-layer-from-tls-stream: ~S comes from STREAM and cannot be passed in."
+                    key))
+  (let ((layer (tls-stream-record-layer stream)))
+    (multiple-value-bind (plaintext plaintext-start)
+        (tls-stream-detach-input-plaintext stream)
+      (apply #'adopt-record-layer
+             (tls-stream-underlying-stream stream)
+             :read-cipher (record-layer-read-cipher layer)
+             :write-cipher (record-layer-write-cipher layer)
+             :cipher-suite (record-layer-cipher-suite layer)
+             :in-plaintext plaintext
+             :in-plaintext-start plaintext-start
+             keys))))
+
 ;;;; Output Methods
 
 (defmethod stream-write-byte ((stream tls-stream) byte)

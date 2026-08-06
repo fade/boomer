@@ -166,6 +166,105 @@
 
 ;;;; Test Runner
 
+;;;; Handing a finished connection to an adopted record layer
+
+;;; Nothing below encrypts or decrypts anything.  The AEAD ciphers exist only so
+;;; the handover has live ones to carry across, and no sequence number is ever
+;;; advanced or read.
+
+(defun handover-cipher (fill)
+  "An AEAD cipher with distinctive key and IV octets, for identity only."
+  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
+                       (pure-tls::make-octet-vector 16 :initial-element fill)
+                       (pure-tls::make-octet-vector 12 :initial-element (1+ fill))))
+
+(defun make-handover-stream (payload consumed)
+  "A blocking TLS stream holding PAYLOAD as decrypted input, of which the
+   application has already read the first CONSUMED octets.  The prefix is read
+   through the ordinary blocking path so the input position ends up where a real
+   application would have left it."
+  (let* ((transport (flexi-streams:make-in-memory-output-stream))
+         (stream (make-instance 'pure-tls::tls-client-stream :stream transport))
+         (layer (pure-tls::make-record-layer transport)))
+    (setf (pure-tls::record-layer-read-cipher layer) (handover-cipher 1)
+          (pure-tls::record-layer-write-cipher layer) (handover-cipher 3)
+          (pure-tls::record-layer-cipher-suite layer) pure-tls:+tls-aes-128-gcm-sha256+)
+    (setf (pure-tls::tls-stream-record-layer stream) layer
+          (pure-tls::tls-stream-input-buffer stream) (copy-seq payload)
+          (pure-tls::tls-stream-input-position stream) 0)
+    (dotimes (i consumed) (read-byte stream))
+    stream))
+
+(defun handover-drain (layer)
+  "Everything LAYER is currently holding as inbound plaintext, as one vector."
+  (let ((out (pure-tls::make-octet-vector
+              (pure-tls::record-layer-plaintext-available layer))))
+    (pure-tls::record-layer-take-plaintext layer out)
+    out))
+
+(test handover-moves-unread-plaintext-to-record-layer
+  "Adoption carries the unread tail of the stream's input buffer and no more."
+  (let* ((payload (pure-tls::octet-vector 10 11 12 13 14 15 16 17))
+         (consumed 3)
+         (tail (subseq payload consumed))
+         (stream (make-handover-stream payload consumed)))
+    (is (= (- (length payload) consumed)
+           (pure-tls::tls-stream-buffer-remaining stream))
+        "The fixture should leave exactly the tail unread on the stream")
+    (let ((layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
+      (is (zerop (pure-tls::tls-stream-buffer-remaining stream))
+          "The stream should hold no inbound plaintext once it has been moved")
+      (is (= (length tail) (pure-tls::record-layer-plaintext-available layer))
+          "The layer should hold exactly the octets the application had not read")
+      ;; Take the tail in two bites so the cursor has to advance between them.
+      (let ((out (pure-tls::make-octet-vector (length tail))))
+        (is (= 2 (pure-tls::record-layer-take-plaintext layer out :end 2))
+            "A bounded take should write only as many octets as it was given room for")
+        (is (= (- (length tail) 2)
+               (pure-tls::record-layer-plaintext-available layer))
+            "The cursor should advance past what was taken")
+        (is (= (- (length tail) 2)
+               (pure-tls::record-layer-take-plaintext layer out :start 2))
+            "The rest of the tail should follow")
+        (is (equalp tail out)
+            "Octets should arrive in order, none lost and none repeated")
+        (is (zerop (pure-tls::record-layer-plaintext-available layer))
+            "The layer should be empty once the tail has been taken")
+        (is (null (pure-tls::record-layer-in-plaintext layer))
+            "A drained layer should release the vector rather than hold an empty one")
+        (is (zerop (pure-tls::record-layer-take-plaintext layer out))
+            "A drained layer should yield nothing rather than repeat itself")))))
+
+(test handover-tail-check-rejects-both-mistakes
+  "The tail comparison tells a correct handover from either way of botching it.
+   Dropping the leftover loses the tail; carrying the whole input buffer across
+   replays octets the application already read.  Both are checked here against
+   the same comparison the test above passes, so passing it means something."
+  (let* ((payload (pure-tls::octet-vector 10 11 12 13 14 15 16 17))
+         (consumed 3)
+         (tail (subseq payload consumed)))
+    (flet ((adopted (&rest keys)
+             (apply #'pure-tls::adopt-record-layer
+                    (flexi-streams:make-in-memory-output-stream)
+                    :read-cipher (handover-cipher 1)
+                    :write-cipher (handover-cipher 3)
+                    keys)))
+      (let ((dropped (handover-drain (adopted :in-plaintext nil))))
+        (is (not (equalp tail dropped))
+            "Dropping the leftover should not satisfy the tail check")
+        (is (zerop (length dropped))
+            "Dropping the leftover loses every octet the application had not read"))
+      (let ((whole (handover-drain (adopted :in-plaintext payload
+                                            :in-plaintext-start 0))))
+        (is (not (equalp tail whole))
+            "Carrying the whole input buffer should not satisfy the tail check")
+        (is (equalp payload whole)
+            "Carrying the whole input buffer replays the already-read prefix"))
+      (let ((moved (handover-drain (adopted :in-plaintext payload
+                                            :in-plaintext-start consumed))))
+        (is (equalp tail moved)
+            "Only the tail from the input position satisfies the check")))))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

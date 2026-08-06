@@ -206,6 +206,19 @@
   ;; and mirror OUT-SOURCE / OUT-START on the outbound path.
   (in-plaintext nil :type (or null octet-vector))
   (in-plaintext-start 0 :type fixnum)
+  ;; A finished record whose content type is not application data waits here
+  ;; instead, whole, until the caller takes it.  The data phase still carries
+  ;; alerts and post-handshake messages such as NewSessionTicket and KeyUpdate,
+  ;; and adding one of those to IN-PLAINTEXT would splice it into the
+  ;; application's byte stream where nothing downstream can tell it apart from
+  ;; payload.
+  (in-message nil :type (or null octet-vector))
+  (in-message-content-type 0 :type fixnum)
+  ;; Set once the caller has said the transport will send no more octets.  The
+  ;; layer cannot find this out for itself: it is handed octets and never reads
+  ;; a descriptor, so an empty hand-over means the transport had nothing this
+  ;; time round and nothing more than that.
+  (in-eof nil :type boolean)
   ;; Outbound cursor.  OUT-RECORD holds one already encrypted record that the
   ;; transport has not finished accepting, and OUT-RECORD-SENT is how many of
   ;; its bytes went out.
@@ -740,6 +753,329 @@
             (t
              (setf (record-layer-out-record-sent layer) now)
              (- size now))))))
+
+;;;; Reading records from a transport that hands them over in pieces
+;;;
+;;; READ-TLS-RECORD waits on a stream and does not come back until it holds a
+;;; whole record.  Its place in that record lives on the stack: the running
+;;; total inside READ-EXACT-BYTES, and the header, length and body locals of
+;;; READ-TLS-RECORD itself.  A read suspended part way through a record
+;;; therefore cannot be resumed, because the part already in hand has nowhere
+;;; to wait.  The functions below are the other way round.  The caller owns the
+;;; socket, reads whatever the transport happens to have, and hands the octets
+;;; in; the layer keeps its place between calls, in the inbound cursor slots on
+;;; the structure.
+;;;
+;;; The layer is given no descriptor and asks for none.  There is no call in
+;;; here that can block, and none that can discover an end of file, so the
+;;; caller is the only party in a position to see the transport close and says
+;;; so with RECORD-LAYER-NOTE-TRANSPORT-EOF.  Keeping that separate from the
+;;; feed is the point rather than an inconvenience: on a non-blocking transport
+;;; "nothing arrived this time round" is the commonest answer there is, and it
+;;; is news about the moment, not about whether the peer is finished.
+;;; READ-EXACT-BYTES reads no progress as end of file, which is sound for the
+;;; blocking stream it serves and would be an invented close here.
+;;;
+;;; Nothing above changes.  RECORD-LAYER-READ still pulls whole records off a
+;;; stream, which is what the Gray stream needs.
+
+(defun record-layer-transport-eof-p (layer)
+  "True once the caller has said the transport will deliver no further octets."
+  (declare (type record-layer layer))
+  (record-layer-in-eof layer))
+
+(defun record-layer-input-pending-p (layer)
+  "True while LAYER is part way through a record it has not finished reading."
+  (declare (type record-layer layer))
+  (not (eq (record-layer-in-phase layer) :idle)))
+
+(defun record-layer-message-available-p (layer)
+  "True while LAYER holds a finished record that is not application data."
+  (declare (type record-layer layer))
+  (and (record-layer-in-message layer) t))
+
+(defun record-layer-inbound-held-p (layer)
+  "True while LAYER is holding a finished result that no reader has taken.
+
+   The layer has room for one at a time, so while this is true it consumes no
+   ciphertext.  Draining it with RECORD-LAYER-TAKE-PLAINTEXT or
+   RECORD-LAYER-TAKE-MESSAGE is what lets the next record through."
+  (declare (type record-layer layer))
+  (or (plusp (record-layer-plaintext-available layer))
+      (record-layer-message-available-p layer)))
+
+(defun record-layer-input-wanted (layer)
+  "How many more octets LAYER needs to finish the unit it is on, so a caller
+   can size its next read instead of guessing.
+
+   Five while the layer is between records or part way through a header, and
+   the remainder of the body once the header has arrived.
+
+   Zero says do not offer anything yet, for one of two reasons: the layer is
+   still holding a finished result nobody has taken, or the caller has already
+   said the transport is at end of file.  A feed made anyway would consume
+   nothing, so this count and the feed agree about what the layer will take."
+  (declare (type record-layer layer))
+  (cond ((record-layer-in-eof layer) 0)
+        ((record-layer-inbound-held-p layer) 0)
+        ((eq (record-layer-in-phase layer) :body)
+         (- (record-layer-in-length layer)
+            (record-layer-in-body-filled layer)))
+        (t (- 5 (record-layer-in-header-seen layer)))))
+
+(defun record-layer-begin-inbound-body (layer)
+  "Vet the header LAYER has just finished reading and make room for the body it
+   declares.
+
+   The checks are the ones READ-TLS-RECORD makes, with the layer's own inbound
+   ciphertext budget applied on top of the protocol ceiling, and they run before
+   any room is made so nothing is buffered on behalf of a peer that has already
+   broken the framing.  The content type range is what rejects an SSLv2 record
+   whose first octet has its high bit set, which would otherwise declare a
+   length the layer would sit and wait for.
+
+   No alert is written.  This path has no stream to write one to, and the
+   caller that owns the socket is the party that can send one.
+
+   A rejection leaves the cursors on the header that caused it, so a caller that
+   feeds on regardless meets the same refusal rather than a different fault
+   further downstream."
+  (declare (type record-layer layer))
+  (let ((content-type (record-layer-in-content-type layer))
+        (length (record-layer-in-length layer))
+        (limit (min (record-layer-max-in-ciphertext layer)
+                    +max-record-size-with-padding+)))
+    (declare (type fixnum content-type length limit))
+    (unless (and (>= content-type +content-type-change-cipher-spec+)
+                 (<= content-type 24))
+      (error 'tls-decode-error
+             :message (format nil ":WRONG_VERSION_NUMBER: Invalid content type ~D (not a valid TLS record)"
+                              content-type)))
+    (when (> length limit)
+      (error 'tls-record-overflow :size length :max-size limit))
+    ;; Reuse the previous body only when it is exactly the size wanted.  What
+    ;; goes to the cipher has to be the record and nothing else, so an
+    ;; over-large buffer would have to be trimmed into a fresh one anyway.
+    (let ((body (record-layer-in-body layer)))
+      (unless (and body (= (length body) length))
+        (setf (record-layer-in-body layer) (make-octet-vector length))))
+    (setf (record-layer-in-body-filled layer) 0
+          (record-layer-in-phase layer) :body)))
+
+(defun record-layer-hold-inbound (layer content-type plaintext)
+  "Put the finished PLAINTEXT of one record where a reader will look for it.
+
+   Application data joins the plaintext RECORD-LAYER-TAKE-PLAINTEXT serves, so a
+   reader takes octets and never has to know how many records they arrived in.
+   Anything else is kept whole and apart for RECORD-LAYER-TAKE-MESSAGE.  An
+   application-data record carrying nothing is dropped rather than held: it
+   delivers no octets, and holding an empty vector would stall the feed until
+   somebody took a payload that does not exist.
+
+   The layer's inbound plaintext budget is applied here, which is the first
+   point at which the size is known."
+  (declare (type record-layer layer)
+           (type fixnum content-type)
+           (type octet-vector plaintext))
+  (let ((limit (min (record-layer-max-in-plaintext layer) +max-record-size+)))
+    (declare (type fixnum limit))
+    (when (> (length plaintext) limit)
+      (error 'tls-record-overflow :size (length plaintext) :max-size limit)))
+  (cond ((/= content-type +content-type-application-data+)
+         (setf (record-layer-in-message layer) plaintext
+               (record-layer-in-message-content-type layer) content-type))
+        ((plusp (length plaintext))
+         (setf (record-layer-in-plaintext layer) plaintext
+               (record-layer-in-plaintext-start layer) 0)))
+  content-type)
+
+(defun record-layer-complete-inbound-record (layer)
+  "Turn the record LAYER has just finished reading into a result a reader can
+   take, and put the inbound cursors back to idle for the next one.
+
+   Decryption is the same one RECORD-LAYER-READ performs, reached the same way
+   and happening once for this record.
+
+   The cursors go idle before anything that can signal, so a record the layer
+   refuses leaves it between records rather than stuck part way through one.
+   IN-BODY is kept, because the next record of the same size can reuse it."
+  (declare (type record-layer layer))
+  (let ((content-type (record-layer-in-content-type layer))
+        (version (record-layer-in-version layer))
+        (length (record-layer-in-length layer))
+        (body (record-layer-in-body layer))
+        (cipher (record-layer-read-cipher layer)))
+    (declare (type fixnum content-type version length))
+    (setf (record-layer-in-phase layer) :idle
+          (record-layer-in-header layer) 0
+          (record-layer-in-header-seen layer) 0
+          (record-layer-in-body-filled layer) 0)
+    (flet ((fragment ()
+             ;; The body buffer stays with the layer and is written over by the
+             ;; next record, so what leaves here is a copy.
+             (let ((copy (make-octet-vector length)))
+               (replace copy body :end2 length)
+               copy)))
+      (cond
+        ;; change_cipher_spec means nothing in TLS 1.3 and is not encrypted,
+        ;; but middleboxes still expect to see it, so peers still send it.  The
+        ;; count is what stops an endless stream of them.
+        ((= content-type +content-type-change-cipher-spec+)
+         (incf (record-layer-ccs-count layer))
+         (when (> (record-layer-ccs-count layer) +max-ccs-messages+)
+           (error 'tls-handshake-error
+                  :message ":TOO_MANY_EMPTY_FRAGMENTS: Too many change_cipher_spec messages"))
+         (record-layer-hold-inbound layer content-type (fragment)))
+        (cipher
+         ;; RFC 8446 Section 5.1: once keys are installed every record except
+         ;; change_cipher_spec arrives wrapped as application_data.
+         (unless (= content-type +content-type-application-data+)
+           (error 'tls-handshake-error
+                  :message (format nil ":INVALID_OUTER_RECORD_TYPE: Expected encrypted record (23), got ~D"
+                                   content-type)))
+         (let ((header (make-array 5 :element-type '(unsigned-byte 8)
+                                     :initial-element 0)))
+           (declare (type (simple-array (unsigned-byte 8) (5)) header)
+                    (dynamic-extent header))
+           ;; The AAD is the header as it arrived, legacy version included, so
+           ;; it has to be rebuilt from what was received rather than from what
+           ;; a sender would have written.
+           (setf (aref header 0) content-type
+                 (aref header 1) (ldb (byte 8 8) version)
+                 (aref header 2) (ldb (byte 8 0) version)
+                 (aref header 3) (ldb (byte 8 8) length)
+                 (aref header 4) (ldb (byte 8 0) length))
+           (with-buffer-context (*buffer-pool*)
+             (multiple-value-bind (plaintext inner-content-type)
+                 (tls13-decrypt-record cipher body header)
+               (record-layer-hold-inbound layer inner-content-type plaintext)))))
+        (t
+         (record-layer-hold-inbound layer content-type (fragment)))))))
+
+(defun record-layer-feed-ciphertext (layer data &key (start 0) (end (length data)))
+  "Hand LAYER the ciphertext octets DATA[start,end) exactly as they came off the
+   transport.  Returns how many of them it took.
+
+   Taking fewer than offered is ordinary and the caller re-offers the rest.  The
+   layer stops at the end of a record, so a hand-over spanning a boundary is
+   consumed as far as that boundary and no further; it also takes nothing at all
+   while it is still holding a finished result, which is how it asks the caller
+   to slow down rather than losing a record.  RECORD-LAYER-INPUT-WANTED says
+   which of those the caller is looking at before it bothers to read.
+
+   Octets go into the header until five have arrived, then into the body for as
+   many as the header declared, and the layer resumes at that exact point on the
+   next call however the hand-overs happen to be cut.  A record fed one octet at
+   a time and the same record fed whole produce the same result.
+
+   Finishing a record decrypts it and leaves the plaintext for
+   RECORD-LAYER-TAKE-PLAINTEXT or, when it is not application data,
+   RECORD-LAYER-TAKE-MESSAGE.
+
+   An empty hand-over is not an end of file.  It says the transport had nothing
+   this time round, takes nothing, and changes nothing; only
+   RECORD-LAYER-NOTE-TRANSPORT-EOF says the peer is finished.  Offering octets
+   after that has been said is a caller error, because there is no way for them
+   to have arrived."
+  (declare (type record-layer layer)
+           (type octet-vector data))
+  (unless (<= 0 start end (length data))
+    (error "record-layer-feed-ciphertext: [~D,~D) lies outside a buffer of ~D octets."
+           start end (length data)))
+  (when (and (record-layer-in-eof layer) (< start end))
+    (error "record-layer-feed-ciphertext: ~D octet~:P offered after the transport was declared closed."
+           (- end start)))
+  (if (record-layer-inbound-held-p layer)
+      0
+      (let ((from start))
+        (declare (type fixnum from))
+        (when (eq (record-layer-in-phase layer) :idle)
+          (setf (record-layer-in-phase layer) :header
+                (record-layer-in-header layer) 0
+                (record-layer-in-header-seen layer) 0))
+        (when (eq (record-layer-in-phase layer) :header)
+          ;; Each octet is placed at the bit position it occupies in the packed
+          ;; header, rather than shifted in from the right, so the content type
+          ;; and the legacy version can be read off a header that is not
+          ;; complete yet.
+          (loop while (and (< from end)
+                           (< (record-layer-in-header-seen layer) 5))
+                do (let ((seen (record-layer-in-header-seen layer)))
+                     (declare (type fixnum seen))
+                     (setf (record-layer-in-header layer)
+                           (logior (record-layer-in-header layer)
+                                   (ash (aref data from) (* 8 (- 4 seen))))
+                           (record-layer-in-header-seen layer) (1+ seen))
+                     (incf from)))
+          (when (= 5 (record-layer-in-header-seen layer))
+            (record-layer-begin-inbound-body layer)))
+        (when (eq (record-layer-in-phase layer) :body)
+          (let* ((filled (record-layer-in-body-filled layer))
+                 (length (record-layer-in-length layer))
+                 (take (min (- length filled) (- end from))))
+            (declare (type fixnum filled length take))
+            (when (plusp take)
+              (replace (record-layer-in-body layer) data
+                       :start1 filled :end1 (+ filled take)
+                       :start2 from :end2 (+ from take))
+              (setf (record-layer-in-body-filled layer) (+ filled take))
+              (incf from take))
+            (when (= (record-layer-in-body-filled layer) length)
+              (record-layer-complete-inbound-record layer))))
+        (- from start))))
+
+(defun record-layer-take-message (layer)
+  "The finished record LAYER is holding that is not application data, as
+   (VALUES content-type plaintext), or (VALUES NIL NIL) when it holds none.
+
+   Alerts and post-handshake messages such as NewSessionTicket and KeyUpdate
+   still arrive during the data phase, and they come out here rather than in the
+   application's byte stream, where nothing downstream could tell them from
+   payload.  The content type is the inner one for a record that was encrypted.
+
+   Taking the record releases it and lets the feed run again.  Until it is taken
+   RECORD-LAYER-FEED-CIPHERTEXT consumes nothing: the layer holds one finished
+   record at a time, and making room by overwriting would drop an alert the
+   caller had not seen yet."
+  (declare (type record-layer layer))
+  (let ((message (record-layer-in-message layer)))
+    (if (null message)
+        (values nil nil)
+        (let ((content-type (record-layer-in-message-content-type layer)))
+          (declare (type fixnum content-type))
+          (setf (record-layer-in-message layer) nil
+                (record-layer-in-message-content-type layer) 0)
+          (values content-type message)))))
+
+(defun record-layer-note-transport-eof (layer)
+  "Tell LAYER that the transport is closed and no further octets can arrive.
+
+   This is the only way the layer can learn it, and it is deliberately not
+   something a feed can express.  A feed of zero octets says the transport had
+   nothing to give this time round, which on a non-blocking transport is the
+   commonest answer there is and says nothing about whether the peer is
+   finished.  Reading the two as the same thing is what READ-EXACT-BYTES does,
+   correctly, because on a blocking stream a read that makes no progress has
+   already waited; here nothing has waited for anything.
+
+   At a record boundary the close is just the end of the octet stream and this
+   returns.  Whether the peer ended things properly is a question about
+   close_notify and is settled above the record layer.  Part way through a
+   record it is a truncation and TLS-DECODE-ERROR is signalled, naming what the
+   record still needed.  The flag is set before that, so a caller that handles
+   the error still finds a layer that knows the transport is gone."
+  (declare (type record-layer layer))
+  (setf (record-layer-in-eof layer) t)
+  (when (record-layer-input-pending-p layer)
+    (let ((body-phase (eq (record-layer-in-phase layer) :body)))
+      (error 'tls-decode-error
+             :message (format nil "Truncated record: transport closed with ~D octet~:P of the ~A outstanding"
+                              (if body-phase
+                                  (- (record-layer-in-length layer)
+                                     (record-layer-in-body-filled layer))
+                                  (- 5 (record-layer-in-header-seen layer)))
+                              (if body-phase "body" "header")))))
+  (values))
 
 ;;;; Alert Processing
 

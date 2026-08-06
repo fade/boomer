@@ -267,8 +267,8 @@
 
 ;;;; Reading a record while plaintext is still held
 
-(defun record-on-the-wire (content-type body)
-  "An input stream carrying one whole unencrypted TLS record."
+(defun record-octets (content-type body)
+  "One whole TLS record as it appears on the wire: five header octets and BODY."
   (let ((wire (pure-tls::make-octet-vector (+ 5 (length body)))))
     (setf (aref wire 0) content-type
           (aref wire 1) 3
@@ -276,7 +276,11 @@
           (aref wire 3) (ldb (byte 8 8) (length body))
           (aref wire 4) (ldb (byte 8 0) (length body)))
     (replace wire body :start1 5)
-    (flexi-streams:make-in-memory-input-stream wire)))
+    wire))
+
+(defun record-on-the-wire (content-type body)
+  "An input stream carrying one whole unencrypted TLS record."
+  (flexi-streams:make-in-memory-input-stream (record-octets content-type body)))
 
 (test record-read-refuses-a-record-while-plaintext-is-held
   "Asking for a record while the layer still holds decrypted octets is refused.
@@ -556,6 +560,259 @@
           "and the bodies are the submitted octets, split at the fragment limit")
       (is (= 16 (length received))
           "Two headers and six octets of payload reach the transport"))))
+
+;;;; Taking records from a transport that hands them over in pieces
+
+;;; The layer is handed octets and is never given anything to read from, so
+;;; every layer below is built on NIL where the stream goes.
+
+(defun inbound-cipher ()
+  "An AEAD cipher for the fed inbound tests.  Two are made from the same key and
+   IV, one to produce the fixture records and one for the layer to read them
+   with, which is what the two ends of a connection hold.  No nonce encrypts
+   twice: each fixture record is encrypted once, by the sender object, and the
+   layer's object only ever decrypts."
+  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
+                       (pure-tls::make-octet-vector 16 :initial-element 5)
+                       (pure-tls::make-octet-vector 12 :initial-element 11)))
+
+(defun inbound-layer (&key read-cipher)
+  "A record layer with no stream at all, ready to be fed ciphertext."
+  (let ((layer (pure-tls::make-record-layer nil)))
+    (when read-cipher
+      (setf (pure-tls::record-layer-read-cipher layer) read-cipher
+            (pure-tls::record-layer-cipher-suite layer)
+            pure-tls:+tls-aes-128-gcm-sha256+))
+    layer))
+
+(defun feed-record (layer wire chunk)
+  "Offer WIRE to LAYER at most CHUNK octets at a time, re-offering whatever it
+   declines, and stop as soon as it takes nothing from an offer that had octets
+   in it.  Returns how many octets it took altogether."
+  (let ((at 0))
+    (loop while (< at (length wire))
+          do (let ((taken (pure-tls::record-layer-feed-ciphertext
+                           layer wire
+                           :start at :end (min (length wire) (+ at chunk)))))
+               (when (zerop taken) (return))
+               (incf at taken)))
+    at))
+
+(defun taken-message (layer)
+  "The body of the finished record LAYER holds that is not application data, or
+   NIL when it holds none."
+  (nth-value 1 (pure-tls::record-layer-take-message layer)))
+
+(defun forget-inbound-progress (layer &key (header t) (body t))
+  "Throw away what LAYER has read of the record it is part way through, which is
+   what a reader whose place lives on the stack loses at every suspension.  The
+   controls below use it to show what the inbound cursors are buying."
+  (when header
+    (setf (pure-tls::record-layer-in-phase layer) :idle
+          (pure-tls::record-layer-in-header layer) 0
+          (pure-tls::record-layer-in-header-seen layer) 0))
+  (when body
+    (setf (pure-tls::record-layer-in-body-filled layer) 0))
+  layer)
+
+(test inbound-record-fed-one-octet-at-a-time-matches-a-single-feed
+  "The same record delivered one octet per call and delivered whole produce the
+   same result.  Where the transport happened to cut the octets is not something
+   the peer chose, and it must not change what the reader sees.
+
+   The control is the reader this path exists to replace.  Clearing the inbound
+   cursors after every octet is what a reader whose place lives on the stack
+   loses at each suspension, and the comparison the split feed passes rejects
+   it: five separate first octets never add up to a header, so nothing arrives
+   at all."
+  (let* ((body (counting-payload 23))
+         (wire (record-octets pure-tls::+content-type-handshake+ body)))
+    (let ((layer (inbound-layer)))
+      (is (null (pure-tls::record-layer-stream layer))
+          "This path serves a caller that has no stream to give the layer")
+      (is (= 5 (pure-tls::record-layer-input-wanted layer))
+          "An idle layer wants a header before anything else")
+      (is (= (length wire) (pure-tls::record-layer-feed-ciphertext layer wire))
+          "A whole record offered in one call is taken in one call")
+      (is (equalp body (taken-message layer))
+          "and its body arrives intact"))
+    (let ((layer (inbound-layer)))
+      (is (= (length wire) (feed-record layer wire 1))
+          "The same record offered an octet at a time is taken an octet at a time")
+      (is (not (pure-tls::record-layer-input-pending-p layer))
+          "and the layer is between records once the last octet is in")
+      (is (equalp body (taken-message layer))
+          "and the body is the same as when the record arrived whole"))
+    (let ((layer (inbound-layer)))
+      (dotimes (i (length wire))
+        (pure-tls::record-layer-feed-ciphertext layer wire :start i :end (1+ i))
+        (forget-inbound-progress layer))
+      (let ((lost (taken-message layer)))
+        (is (not (equalp body lost))
+            "Losing the cursors between calls should not satisfy the comparison")
+        (is (null lost)
+            "and it loses the record outright rather than delivering it late")))))
+
+(test inbound-record-split-across-the-header-boundary-resumes
+  "A record cut anywhere, the boundary between its header and its body
+   included, arrives whole.  That boundary is the case the inbound cursors exist
+   for: a header is five octets and a transport has no reason to deliver them
+   together, so the part already read has to wait somewhere that outlives the
+   call.  Every cut point in the record is tried against the same comparison,
+   and the layer is asked at each one how much it still wants, because a caller
+   sizing its next read has nothing else to go on.
+
+   The control keeps the header progress and clears the body cursor at the cut,
+   which is what a layer that tracked only half its place would do.  The
+   comparison rejects it."
+  (let* ((body (counting-payload 9))
+         (wire (record-octets pure-tls::+content-type-handshake+ body)))
+    (loop for cut from 1 below (length wire)
+          do (let ((layer (inbound-layer)))
+               (is (= cut (pure-tls::record-layer-feed-ciphertext
+                           layer wire :start 0 :end cut))
+                   "The layer should take the whole of the first piece")
+               (is (pure-tls::record-layer-input-pending-p layer)
+                   "and should know it is part way through a record")
+               (is (= (if (< cut 5) (- 5 cut) (- (length wire) cut))
+                      (pure-tls::record-layer-input-wanted layer))
+                   "and should say what would finish the unit it is on, which is
+                    the header until five octets are in and the body after")
+               (is (= (- (length wire) cut)
+                      (pure-tls::record-layer-feed-ciphertext
+                       layer wire :start cut :end (length wire)))
+                   "It should then take the rest")
+               (is (equalp body (taken-message layer))
+                   "and hand over the record the two pieces make up")))
+    (let ((layer (inbound-layer))
+          (cut 7))
+      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end cut)
+      (forget-inbound-progress layer :header nil)
+      (pure-tls::record-layer-feed-ciphertext layer wire :start cut :end (length wire))
+      (is (null (taken-message layer))
+          "Losing the body cursor at the cut should not satisfy the comparison"))))
+
+(test inbound-end-of-file-is-told-apart-from-no-octets-right-now
+  "A hand-over of no octets and a closed transport are different facts, and the
+   layer keeps them apart.
+
+   On a blocking stream they are the same thing, because a read that came back
+   with nothing has already waited; READ-EXACT-BYTES is right to end there.
+   Nothing waits on this path.  An empty hand-over means only that the transport
+   had nothing at that instant, which is the commonest answer a non-blocking
+   transport gives, and reading it as a close would end healthy connections at
+   random.
+
+   The same two questions are put to the layer in both states, and the last
+   block applies the conflation at exactly the point the empty hand-overs
+   happened, so the difference is shown rather than asserted."
+  (let* ((body (counting-payload 6))
+         (wire (record-octets pure-tls::+content-type-handshake+ body))
+         (empty (pure-tls::make-octet-vector 0)))
+    (let ((layer (inbound-layer)))
+      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (dotimes (i 4)
+        (is (zerop (pure-tls::record-layer-feed-ciphertext layer empty))
+            "A hand-over of no octets takes nothing")
+        (is (zerop (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end 3))
+            "and an empty span of a full buffer says the same thing"))
+      (is (not (pure-tls::record-layer-transport-eof-p layer))
+          "None of that says the transport is finished")
+      (is (= 2 (pure-tls::record-layer-input-wanted layer))
+          "and the layer is still waiting on the rest of the header")
+      (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end (length wire))
+      (is (equalp body (taken-message layer))
+          "so the record arrives once the octets do"))
+    (let ((layer (inbound-layer)))
+      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (is (not (pure-tls::record-layer-transport-eof-p layer))
+          "The same layer, in the same place in the same record")
+      (signals pure-tls:tls-decode-error
+        (pure-tls::record-layer-note-transport-eof layer))
+      (is (pure-tls::record-layer-transport-eof-p layer)
+          "now holds the fact the empty hand-overs never established")
+      (is (zerop (pure-tls::record-layer-input-wanted layer))
+          "The layer asks for nothing more once the transport is gone")
+      (signals simple-error
+        (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end (length wire)))
+      (is (null (taken-message layer))
+          "and a truncated record is not delivered as though it were whole"))
+    (let ((layer (inbound-layer)))
+      (pure-tls::record-layer-feed-ciphertext layer wire)
+      (pure-tls::record-layer-note-transport-eof layer)
+      (is (pure-tls::record-layer-transport-eof-p layer)
+          "A close between records is noted and is not an error")
+      (is (equalp body (taken-message layer))
+          "and the record that had already arrived is still there to take"))
+    (let ((layer (inbound-layer)))
+      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (handler-case (pure-tls::record-layer-note-transport-eof layer)
+        (pure-tls:tls-decode-error () nil))
+      (is (not (equalp body
+                       (handler-case
+                           (progn (pure-tls::record-layer-feed-ciphertext
+                                   layer wire :start 3 :end (length wire))
+                                  (taken-message layer))
+                         (error () nil))))
+          "Treating those empty hand-overs as a close costs the record, which is
+           what the two questions above are there to tell apart"))))
+
+(test inbound-records-that-are-not-application-data-stay-out-of-the-byte-stream
+  "The data phase still carries alerts and post-handshake messages such as
+   NewSessionTicket and KeyUpdate, and those come out separately from the
+   application's octets.
+
+   Splicing a ticket into the byte stream would hand the application octets it
+   has no way to tell from payload, and the damage would be silent.  What the
+   application takes is therefore compared both with the payload and with what
+   it would have taken had the ticket been mixed in, so the comparison rejects
+   the failure as well as accepting the success.
+
+   This is also where the decrypt path is exercised, one record at a time
+   through it.  Nothing is encrypted twice: each fixture record is produced once
+   by the sender cipher, and the layer's cipher only decrypts."
+  (let* ((sender (inbound-cipher))
+         (layer (inbound-layer :read-cipher (inbound-cipher)))
+         (payload (counting-payload 12))
+         (ticket (pure-tls::octet-vector 4 0 0 3 7 8 9))
+         (app-wire (record-octets
+                    pure-tls::+content-type-application-data+
+                    (pure-tls::tls13-encrypt-record
+                     sender pure-tls::+content-type-application-data+ payload)))
+         (ticket-wire (record-octets
+                       pure-tls::+content-type-application-data+
+                       (pure-tls::tls13-encrypt-record
+                        sender pure-tls::+content-type-handshake+ ticket))))
+    (is (= (length app-wire) (feed-record layer app-wire 1))
+        "An encrypted record dribbling in an octet at a time is taken whole")
+    (is (= (length payload) (pure-tls::record-layer-plaintext-available layer))
+        "and what a reader can take is the decrypted payload")
+    (is (not (pure-tls::record-layer-message-available-p layer))
+        "Application data is not surfaced as a message")
+    (is (zerop (pure-tls::record-layer-feed-ciphertext layer ticket-wire))
+        "The layer takes nothing while it still holds a finished result, rather
+         than making room by overwriting one")
+    (let ((taken (handover-drain layer)))
+      (is (equalp payload taken)
+          "The application takes the payload the peer sent")
+      (is (not (equalp (concatenate '(vector (unsigned-byte 8)) payload ticket)
+                       taken))
+          "and not the payload with the ticket spliced onto it, which is what
+           one plaintext buffer for every content type would have produced"))
+    (is (= (length ticket-wire) (feed-record layer ticket-wire 1))
+        "With the payload taken the next record goes in")
+    (is (zerop (pure-tls::record-layer-plaintext-available layer))
+        "It adds nothing to the application's byte stream")
+    (is (pure-tls::record-layer-message-available-p layer)
+        "and waits as a message instead")
+    (multiple-value-bind (content-type message)
+        (pure-tls::record-layer-take-message layer)
+      (is (= pure-tls::+content-type-handshake+ content-type)
+          "reported under the inner content type the record actually carried")
+      (is (equalp ticket message)
+          "with its octets intact"))
+    (is (not (pure-tls::record-layer-message-available-p layer))
+        "and taking it leaves the layer ready for the next record")))
 
 (defun run-record-tests ()
   "Run all record layer tests."

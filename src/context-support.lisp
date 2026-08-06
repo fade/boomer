@@ -6,7 +6,7 @@
 ;;;
 ;;; Request context support for timeouts and cancellation using cl-cancel.
 
-(in-package :pure-tls)
+(in-package :boomer)
 
 ;;; Conditions
 

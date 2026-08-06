@@ -8,7 +8,7 @@
 ;;; - X25519 (Curve25519 ECDH)
 ;;; - secp256r1 (P-256 ECDH)
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Key Exchange Interface
 

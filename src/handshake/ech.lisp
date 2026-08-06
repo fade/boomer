@@ -8,7 +8,7 @@
 ;;; ECH encrypts the ClientHello including SNI to protect privacy
 ;;; from network observers.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; ECH Config Structures (RFC 9639 Section 4)
 

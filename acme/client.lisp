@@ -6,7 +6,7 @@
 ;;;
 ;;; Core ACME utilities: encoding, crypto, conditions.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; Configuration

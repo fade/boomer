@@ -1,6 +1,6 @@
 #!/bin/bash
-# TLS-Anvil trigger script for pure-tls client testing
-# This script is called by TLS-Anvil to trigger a pure-tls client connection
+# TLS-Anvil trigger script for boomer client testing
+# This script is called by TLS-Anvil to trigger a boomer client connection
 
 cd "$(dirname "$0")/.."
 
@@ -8,18 +8,18 @@ cd "$(dirname "$0")/.."
 HOST="${1:-localhost}"
 PORT="${2:-4433}"
 
-# Run pure-tls client
+# Run boomer client
 sbcl --noinform --non-interactive \
-    --eval "(asdf:load-system :pure-tls :verbose nil)" \
+    --eval "(asdf:load-system :boomer :verbose nil)" \
     --eval "(asdf:load-system :usocket :verbose nil)" \
     --eval "
 (handler-case
     (let ((socket (usocket:socket-connect \"$HOST\" $PORT :element-type '(unsigned-byte 8))))
       (unwind-protect
-           (let ((tls-stream (pure-tls:make-tls-client-stream
+           (let ((tls-stream (boomer:make-tls-client-stream
                                (usocket:socket-stream socket)
                                :hostname \"$HOST\"
-                               :verify pure-tls:+verify-none+)))
+                               :verify boomer:+verify-none+)))
              ;; Try to read - TLS-Anvil may send data
              (handler-case
                  (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))

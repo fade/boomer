@@ -6,7 +6,7 @@
 ;;;
 ;;; TLS-ALPN-01 challenge implementation for ACME certificate validation.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; TLS-ALPN-01 Challenge Handler
@@ -149,7 +149,7 @@
   (multiple-value-bind (cert-pem key-pem)
       (generate-validation-certificate domain key-authorization)
 
-    ;; Save to temp files (pure-tls needs file paths)
+    ;; Save to temp files (boomer needs file paths)
     (multiple-value-bind (cert-path key-path)
         (save-temp-validation-files cert-pem key-pem)
       (acme-log "~&[ACME] Validation cert saved to ~A~%" cert-path)
@@ -206,7 +206,7 @@
         (acme-log "~&[ACME] Starting TLS handshake with ALPN acme-tls/1~%")
         (force-output)
         ;; Create TLS server stream with ONLY acme-tls/1 ALPN
-        (let ((tls-stream (pure-tls:make-tls-server-stream
+        (let ((tls-stream (boomer:make-tls-server-stream
                           client-stream
                           :certificate (namestring cert-path)
                           :key (namestring key-path)

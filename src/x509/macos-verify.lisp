@@ -5,10 +5,10 @@
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
 ;;; Minimal CFFI bindings to macOS Security.framework for certificate chain
-;;; verification using the system Keychain. This allows pure-tls to validate
+;;; verification using the system Keychain. This allows boomer to validate
 ;;; certificates against macOS trusted roots without bundling CA certificates.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 #+(and (or darwin macos) (not windows))
 (progn

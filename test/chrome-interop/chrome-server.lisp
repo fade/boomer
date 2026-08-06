@@ -18,11 +18,11 @@
 
 (require :asdf)
 
-;; Load pure-tls from parent directory
-(let ((pure-tls-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
-  (push pure-tls-dir asdf:*central-registry*))
+;; Load boomer from parent directory
+(let ((boomer-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
+  (push boomer-dir asdf:*central-registry*))
 
-(asdf:load-system :pure-tls)
+(asdf:load-system :boomer)
 (asdf:load-system :usocket)
 
 (defpackage #:chrome-server
@@ -90,12 +90,12 @@
 
 (defun connection-info-html (group cipher)
   "Generate HTML showing connection information."
-  (html-response "pure-tls Chrome Interop Test"
+  (html-response "boomer Chrome Interop Test"
     (format nil "
 <h1>TLS 1.3 Connection Successful</h1>
 
 <div class=\"success\">
-  <strong>Connection established with pure-tls server!</strong>
+  <strong>Connection established with boomer server!</strong>
 </div>
 
 <div class=\"info\">
@@ -117,7 +117,7 @@
 </ol>
 
 <h2>Server Info</h2>
-<pre>pure-tls TLS 1.3 server
+<pre>boomer TLS 1.3 server
 Supported groups: X25519MLKEM768, X25519, P-256, P-384
 Cipher suites: ChaCha20-Poly1305, AES-256-GCM, AES-128-GCM</pre>
 "
@@ -136,8 +136,8 @@ Cipher suites: ChaCha20-Poly1305, AES-256-GCM, AES-128-GCM</pre>
 
 (defun http-response (status content-type body)
   "Generate an HTTP/1.1 response."
-  (let ((body-bytes (pure-tls::string-to-octets body)))
-    (pure-tls::string-to-octets
+  (let ((body-bytes (boomer::string-to-octets body)))
+    (boomer::string-to-octets
      (format nil "HTTP/1.1 ~A~C~CContent-Type: ~A~C~CContent-Length: ~D~C~CConnection: close~C~C~C~C~A"
              status #\Return #\Linefeed
              content-type #\Return #\Linefeed
@@ -150,16 +150,16 @@ Cipher suites: ChaCha20-Poly1305, AES-256-GCM, AES-128-GCM</pre>
   "Handle a single TLS client connection."
   (let ((stream (usocket:socket-stream socket)))
     (handler-case
-        (let* ((cert-chain (pure-tls:load-certificate-chain *cert-file*))
-               (private-key (pure-tls:load-private-key *key-file*))
-               (tls-stream (pure-tls:make-tls-server-stream
+        (let* ((cert-chain (boomer:load-certificate-chain *cert-file*))
+               (private-key (boomer:load-private-key *key-file*))
+               (tls-stream (boomer:make-tls-server-stream
                             stream
                             :certificate cert-chain
                             :key private-key)))
           (unwind-protect
-               (let* ((handshake (pure-tls::tls-stream-handshake tls-stream))
-                      (selected-group (pure-tls::server-handshake-selected-group handshake))
-                      (cipher-suite (pure-tls::server-handshake-selected-cipher-suite handshake)))
+               (let* ((handshake (boomer::tls-stream-handshake tls-stream))
+                      (selected-group (boomer::server-handshake-selected-group handshake))
+                      (cipher-suite (boomer::server-handshake-selected-cipher-suite handshake)))
                  ;; Log connection details
                  (format t "~%========================================~%")
                  (format t "New TLS 1.3 connection established!~%")
@@ -182,7 +182,7 @@ Cipher suites: ChaCha20-Poly1305, AES-256-GCM, AES-128-GCM</pre>
                    (write-sequence response tls-stream)
                    (force-output tls-stream)))
             (close tls-stream)))
-      (pure-tls:tls-error (e)
+      (boomer:tls-error (e)
         (format *error-output* "TLS error: ~A~%" e))
       (error (e)
         (format *error-output* "Error: ~A~%" e)))))
@@ -191,7 +191,7 @@ Cipher suites: ChaCha20-Poly1305, AES-256-GCM, AES-128-GCM</pre>
   "Run the HTTPS server."
   (format t "~%")
   (format t "==============================================~%")
-  (format t "  pure-tls Chrome Interop Test Server~%")
+  (format t "  boomer Chrome Interop Test Server~%")
   (format t "==============================================~%")
   (format t "~%")
   (format t "Port: ~D~%" *port*)

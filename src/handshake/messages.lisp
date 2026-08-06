@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS 1.3 handshake message parsing and serialization.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Handshake Message Structure
 ;;;

@@ -1,10 +1,10 @@
-;;; pure-tls.asd
+;;; boomer.asd
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(asdf:defsystem "pure-tls"
+(asdf:defsystem "boomer"
   :description "Pure Common Lisp TLS 1.3 implementation"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
@@ -63,23 +63,23 @@
                (:file "src/context")
                (:file "src/streams")))
 
-(asdf:defsystem "pure-tls/cl+ssl-compat"
-  :description "cl+ssl API compatibility layer for pure-tls"
+(asdf:defsystem "boomer/cl+ssl-compat"
+  :description "cl+ssl API compatibility layer for boomer"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.13.0"
-  :depends-on ("pure-tls"
+  :depends-on ("boomer"
                "usocket")
   :serial t
   :components ((:file "compat/package")
                (:file "compat/api")))
 
-(asdf:defsystem "pure-tls/acme"
+(asdf:defsystem "boomer/acme"
   :description "ACME client for automatic certificate management (Let's Encrypt)"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.13.0"
-  :depends-on ("pure-tls"
+  :depends-on ("boomer"
                "drakma"
                "cl-json"
                "cl-base64"
@@ -99,22 +99,22 @@
                              (:file "challenges")
                              (:file "csr")))))
 
-(asdf:defsystem "pure-tls/acme+hunchentoot"
-  :description "Hunchentoot integration for pure-tls/acme"
+(asdf:defsystem "boomer/acme+hunchentoot"
+  :description "Hunchentoot integration for boomer/acme"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
   :version "1.13.0"
-  :depends-on ("pure-tls/acme"
+  :depends-on ("boomer/acme"
                "hunchentoot")
   :serial t
   :components ((:module "acme"
                 :components ((:file "hunchentoot")))))
 
-(asdf:defsystem "pure-tls/test"
-  :description "Tests for pure-tls"
+(asdf:defsystem "boomer/test"
+  :description "Tests for boomer"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :depends-on ("pure-tls"
+  :depends-on ("boomer"
                "fiveam"
                "usocket"
                "iparse"
@@ -141,11 +141,11 @@
                              (:file "resumption-interop-tests")
                              (:file "runner")))))
 
-(asdf:defsystem "pure-tls/acme/test"
-  :description "Tests for the pure-tls ACME client retry/restart handling"
+(asdf:defsystem "boomer/acme/test"
+  :description "Tests for the boomer ACME client retry/restart handling"
   :author "Anthony Green <green@moxielogic.com>"
   :license "MIT"
-  :depends-on ("pure-tls/acme"
+  :depends-on ("boomer/acme"
                "fiveam")
   :serial t
   :components ((:module "test/acme"

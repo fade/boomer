@@ -6,7 +6,7 @@
 ;;;
 ;;; ASN.1 DER encoding utilities for CSR and certificate generation.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; ASN.1 DER Tag Constants
@@ -336,7 +336,7 @@
      (encode-integer-bytes s-bytes))))
 
 (defun encode-ec-private-key-pem (private-key)
-  "Encode EC private key in SEC1/PEM format for pure-tls."
+  "Encode EC private key in SEC1/PEM format for boomer."
   (let* ((key-data (ironclad:destructure-private-key private-key))
          (d-bytes (getf key-data :x))      ; Private key scalar
          (public-point (getf key-data :y)) ; Public point

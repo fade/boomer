@@ -7,7 +7,7 @@
 ;;; Provides an integrated Hunchentoot acceptor that automatically obtains
 ;;; and renews Let's Encrypt certificates using TLS-ALPN-01 challenge.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; ACME Acceptor for Hunchentoot
@@ -83,7 +83,7 @@
   (:documentation
    "Hunchentoot acceptor with automatic Let's Encrypt certificate management.
 
-    Creates TLS connections using pure-tls with automatic:
+    Creates TLS connections using boomer with automatic:
     - Certificate acquisition on startup
     - TLS-ALPN-01 challenge handling from the same port
     - Background certificate renewal
@@ -182,22 +182,22 @@
   (call-next-method))
 
 (defmethod hunchentoot:initialize-connection-stream ((acceptor acme-acceptor) stream)
-  "Wrap the connection with pure-tls, handling ACME challenges inline."
+  "Wrap the connection with boomer, handling ACME challenges inline."
   (let* ((primary-domain (first (acceptor-domains acceptor)))
          (cert-path (store-domain-cert-path (acceptor-cert-store acceptor) primary-domain))
          (key-path (store-domain-key-path (acceptor-cert-store acceptor) primary-domain)))
     ;; Only log per-connection start when debugging
-    (when pure-tls::*handshake-debug*
+    (when boomer::*handshake-debug*
       (acceptor-log acceptor :info "TLS connection starting, cert from ~A" cert-path))
     ;; Certificate should exist (placeholder was created at startup if needed)
     (handler-case
-        (let ((tls-stream (pure-tls:make-tls-server-stream
+        (let ((tls-stream (boomer:make-tls-server-stream
                            stream
                            :certificate (namestring cert-path)
                            :key (namestring key-path)
                            :certificate-provider (make-certificate-provider acceptor))))
           ;; Only log per-connection success when debugging
-          (when pure-tls::*handshake-debug*
+          (when boomer::*handshake-debug*
             (acceptor-log acceptor :info "TLS handshake completed successfully"))
           tls-stream)
       (error (e)
@@ -209,7 +209,7 @@
    This is called during TLS handshake to potentially override the certificate."
   (lambda (hostname alpn-list)
     ;; Only log when handshake debug is enabled (reduces per-connection noise)
-    (when pure-tls::*handshake-debug*
+    (when boomer::*handshake-debug*
       (acceptor-log acceptor :info "Certificate provider called: hostname=~A alpn=~A" hostname alpn-list))
     ;; Check if this is an ACME TLS-ALPN-01 challenge
     (cond ((member "acme-tls/1" alpn-list :test #'string=) 
@@ -225,7 +225,7 @@
                   (acceptor-log acceptor :error "NO VALIDATION CERT AVAILABLE!")
                   nil))))
       (t 
-          (when pure-tls::*handshake-debug*
+          (when boomer::*handshake-debug*
             (acceptor-log acceptor :info "Regular TLS connection (no acme-tls/1)"))
           nil))))
 

@@ -24,7 +24,7 @@ openssl req -new -x509 \
     -key localhost-key.pem \
     -out localhost-cert.pem \
     -days 365 \
-    -subj "/CN=localhost/O=pure-tls Test/C=US" \
+    -subj "/CN=localhost/O=boomer Test/C=US" \
     -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1" \
     -addext "basicConstraints=CA:FALSE" \
     -addext "keyUsage=digitalSignature,keyEncipherment" \

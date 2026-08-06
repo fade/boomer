@@ -1,12 +1,12 @@
-;;; boringssl-shim.lisp --- BoringSSL test runner shim for pure-tls
+;;; boringssl-shim.lisp --- BoringSSL test runner shim for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
 ;;; This file implements a shim binary that allows the BoringSSL
-;;; ssl/test/runner to test pure-tls. The shim communicates with
-;;; the Go test runner over TCP and uses pure-tls for TLS operations.
+;;; ssl/test/runner to test boomer. The shim communicates with
+;;; the Go test runner over TCP and uses boomer for TLS operations.
 ;;;
 ;;; Exit codes:
 ;;;   0  - Test passed
@@ -14,11 +14,11 @@
 ;;;   89 - Feature not implemented (skip test)
 ;;;   90 - Expected failure
 
-(defpackage #:pure-tls/boringssl-shim
+(defpackage #:boomer/boringssl-shim
   (:use #:cl)
   (:export #:main #:build-shim #:shim-toplevel))
 
-(in-package #:pure-tls/boringssl-shim)
+(in-package #:boomer/boringssl-shim)
 
 ;;;; Exit Codes
 (defconstant +exit-success+ 0)
@@ -218,9 +218,9 @@
                ((string= arg "-fallback-scsv")
                 (setf (shim-config-fallback-scsv config) t))
 
-               ;; GREASE (always enabled in pure-tls, just parse the flag)
+               ;; GREASE (always enabled in boomer, just parse the flag)
                ((string= arg "-enable-grease")
-                ;; GREASE is always enabled in pure-tls, nothing to do
+                ;; GREASE is always enabled in boomer, nothing to do
                 nil)
 
                ;; Curves (colon-separated list of curve IDs)
@@ -392,8 +392,8 @@
   (when (and (shim-config-cert-file config)
              (shim-config-key-file config))
     (handler-case
-        (values (pure-tls:load-certificate-chain (shim-config-cert-file config))
-                (pure-tls:load-private-key (shim-config-key-file config)))
+        (values (boomer:load-certificate-chain (shim-config-cert-file config))
+                (boomer:load-private-key (shim-config-key-file config)))
       (error (e)
         (format *error-output* "Failed to load credentials: ~A~%" e)
         (values nil nil)))))
@@ -423,7 +423,7 @@
    STREAM is the raw TCP stream from usocket:socket-stream."
   (multiple-value-bind (client-cert-chain client-private-key)
       (load-credentials config)
-    (let ((pure-tls:*max-certificate-list-size*
+    (let ((boomer:*max-certificate-list-size*
            (shim-config-max-cert-list config)))
       (let* ((trust-store (load-trust-store config))
            (alpn (parse-alpn-protocols (shim-config-advertise-alpn config)))
@@ -431,13 +431,13 @@
            (max-frag (let ((frag (shim-config-max-send-fragment config)))
                        (if (plusp frag) frag nil)))
            (tls-stream
-             (pure-tls:make-tls-client-stream
+             (boomer:make-tls-client-stream
               stream
               :hostname hostname
               :alpn-protocols alpn
               :verify (if (shim-config-verify-peer config)
-                          pure-tls:+verify-required+
-                          pure-tls:+verify-none+)
+                          boomer:+verify-required+
+                          boomer:+verify-none+)
               ;; Pass client certificate/key for mTLS
               :client-certificate (first client-cert-chain)
               :client-key client-private-key
@@ -445,7 +445,7 @@
       (declare (ignore trust-store))
       ;; Check ALPN result if expected
       (when (shim-config-expect-alpn config)
-        (let ((negotiated (pure-tls:tls-selected-alpn tls-stream)))
+        (let ((negotiated (boomer:tls-selected-alpn tls-stream)))
           (unless (string= negotiated (shim-config-expect-alpn config))
             (error "ALPN mismatch: expected ~S, got ~S"
                    (shim-config-expect-alpn config) negotiated))))
@@ -470,17 +470,17 @@
       ;; If check-close-notify is set, wait for peer's close_notify first
       (when (shim-config-check-close-notify config)
         ;; Send our close_notify
-        (pure-tls::record-layer-write-alert
-         (pure-tls::tls-stream-record-layer tls-stream)
-         pure-tls::+alert-level-warning+
-         pure-tls::+alert-close-notify+)
+        (boomer::record-layer-write-alert
+         (boomer::tls-stream-record-layer tls-stream)
+         boomer::+alert-level-warning+
+         boomer::+alert-close-notify+)
         (force-output tls-stream)
         ;; Wait for peer's close_notify
         (handler-case
             (let ((buf (make-array 1 :element-type '(unsigned-byte 8))))
               (loop (read-sequence buf tls-stream)))
-          (pure-tls::tls-connection-closed (e)
-            (unless (pure-tls::tls-connection-closed-clean-p e)
+          (boomer::tls-connection-closed (e)
+            (unless (boomer::tls-connection-closed-clean-p e)
               (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
       +exit-success+))))
@@ -492,7 +492,7 @@
     (unless (and cert-chain private-key)
       (error "Server test requires certificate and key"))
 
-    (let ((pure-tls:*max-certificate-list-size*
+    (let ((boomer:*max-certificate-list-size*
            (shim-config-max-cert-list config)))
       (let* ((sni-callback
              (when (shim-config-expect-server-name config)
@@ -506,10 +506,10 @@
            ;; -verify-peer = +verify-peer+ (request cert, allow anonymous)
            (verify-mode (cond
                           ((shim-config-require-any-client-certificate config)
-                           pure-tls:+verify-required+)
+                           boomer:+verify-required+)
                           ((shim-config-verify-peer config)
-                           pure-tls:+verify-peer+)
-                          (t pure-tls:+verify-none+)))
+                           boomer:+verify-peer+)
+                          (t boomer:+verify-none+)))
            ;; Load trust store for client certificate verification
            (trust-store (when (or (shim-config-require-any-client-certificate config)
                                   (shim-config-verify-peer config))
@@ -518,7 +518,7 @@
            (max-frag (let ((frag (shim-config-max-send-fragment config)))
                        (if (plusp frag) frag nil)))
            (tls-stream
-             (pure-tls:make-tls-server-stream
+             (boomer:make-tls-server-stream
               stream
               :certificate cert-chain
               :key private-key
@@ -548,17 +548,17 @@
       ;; If check-close-notify is set, wait for peer's close_notify first
       (when (shim-config-check-close-notify config)
         ;; Send our close_notify
-        (pure-tls::record-layer-write-alert
-         (pure-tls::tls-stream-record-layer tls-stream)
-         pure-tls::+alert-level-warning+
-         pure-tls::+alert-close-notify+)
+        (boomer::record-layer-write-alert
+         (boomer::tls-stream-record-layer tls-stream)
+         boomer::+alert-level-warning+
+         boomer::+alert-close-notify+)
         (force-output tls-stream)
         ;; Wait for peer's close_notify
         (handler-case
             (let ((buf (make-array 1 :element-type '(unsigned-byte 8))))
               (loop (read-sequence buf tls-stream)))
-          (pure-tls::tls-connection-closed (e)
-            (unless (pure-tls::tls-connection-closed-clean-p e)
+          (boomer::tls-connection-closed (e)
+            (unless (boomer::tls-connection-closed-clean-p e)
               (error "Expected clean close_notify, got unclean shutdown")))))
       (close tls-stream)
       +exit-success+))))
@@ -596,7 +596,7 @@
           (unwind-protect
               ;; Wrap in handler-bind to flush alerts before error propagates
               (handler-bind
-                  ((pure-tls:tls-error
+                  ((boomer:tls-error
                      (lambda (c)
                        (declare (ignore c))
                        ;; Flush underlying stream to ensure alerts are sent
@@ -610,13 +610,13 @@
             (usocket:socket-close socket))))
 
     ;; Handle TLS record overflow
-    (pure-tls:tls-record-overflow (e)
+    (boomer:tls-record-overflow (e)
       (declare (ignore e))
       (format *error-output* ":DATA_LENGTH_TOO_LONG:~%")
       +exit-failure+)
 
     ;; Handle TLS errors
-    (pure-tls:tls-error (e)
+    (boomer:tls-error (e)
       (format *error-output* "TLS error: ~A~%" e)
       +exit-failure+)
 

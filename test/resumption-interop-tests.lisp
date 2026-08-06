@@ -15,19 +15,19 @@
 ;;;
 ;;; 2. The binder transcript for a ClientHello sent in response to a
 ;;;    HelloRetryRequest omitted the message_hash(ClientHello1) and
-;;;    HelloRetryRequest prefix.  Because pure-tls offers only an
+;;;    HelloRetryRequest prefix.  Because boomer offers only an
 ;;;    X25519MLKEM768 key share, every server without ML-KEM support
 ;;;    triggers HRR, so resumption against such servers always failed.
 ;;;    Servers reject the bad binder with illegal_parameter (the alert
 ;;;    RFC 8446 prescribes; OpenSSL uses decrypt_error).
 ;;;
-;;; Both bugs are invisible to loopback (pure-tls to pure-tls) testing
+;;; Both bugs are invisible to loopback (boomer to boomer) testing
 ;;; when client and server share the same wrong transcript computation,
 ;;; and invisible to vector tests that feed COMPUTE-BINDER a precomputed
 ;;; hash.  Only interop with a foreign stack catches them, hence these
 ;;; tests.  They are skipped when the openssl CLI is unavailable.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (def-suite resumption-interop-tests
   :description "TLS 1.3 session resumption interop against OpenSSL s_server")
@@ -73,7 +73,7 @@
   "Run BODY-FN with an openssl s_server listening on PORT.
    EXTRA-ARGS is a list of additional s_server command line arguments."
   (let ((dir (uiop:ensure-directory-pathname
-              (format nil "~Apure-tls-resumption-test-~D/"
+              (format nil "~Aboomer-resumption-test-~D/"
                       (uiop:temporary-directory) port))))
     (ensure-directories-exist dir)
     (unwind-protect
@@ -97,16 +97,16 @@
                       dir :validate t :if-does-not-exist :ignore)))))
 
 (defun resumption-test-connect (port)
-  "Connect to localhost:PORT with pure-tls, issue an HTTP request, and read
+  "Connect to localhost:PORT with boomer, issue an HTTP request, and read
    the response (which also drains NewSessionTicket messages).  Returns the
    client handshake object on success, signals on failure."
   (let ((socket (usocket:socket-connect "localhost" port
                                         :element-type '(unsigned-byte 8))))
     (unwind-protect
-         (let ((tls (pure-tls:make-tls-client-stream
+         (let ((tls (boomer:make-tls-client-stream
                      (usocket:socket-stream socket)
                      :hostname "localhost"
-                     :verify pure-tls:+verify-none+)))
+                     :verify boomer:+verify-none+)))
            (write-sequence (map '(vector (unsigned-byte 8)) #'char-code
                                 (format nil "GET / HTTP/1.0~C~C~C~C"
                                         #\Return #\Linefeed #\Return #\Linefeed))
@@ -115,14 +115,14 @@
            ;; Read a byte of the response; post-handshake NewSessionTicket
            ;; messages are processed while waiting for application data.
            (handler-case (read-byte tls nil nil) (error () nil))
-           (prog1 (pure-tls::tls-stream-handshake tls)
+           (prog1 (boomer::tls-stream-handshake tls)
              (handler-case (close tls) (error () nil))))
       (ignore-errors (usocket:socket-close socket)))))
 
 (defun run-resumption-scenario (port &rest s-server-args)
   "Connect twice to an openssl s_server started with S-SERVER-ARGS.
    Returns (values second-handshake-ok psk-offered psk-accepted)."
-  (pure-tls::session-ticket-cache-clear "localhost")
+  (boomer::session-ticket-cache-clear "localhost")
   (call-with-openssl-s-server
    port s-server-args
    (lambda ()
@@ -132,8 +132,8 @@
      ;; Second connection: offers the cached ticket as a PSK.
      (let ((hs (resumption-test-connect port)))
        (values t
-               (and (pure-tls::client-handshake-offered-psk hs) t)
-               (pure-tls::client-handshake-psk-accepted hs))))))
+               (and (boomer::client-handshake-offered-psk hs) t)
+               (boomer::client-handshake-psk-accepted hs))))))
 
 (test resumption-against-openssl
   "Session resumption against OpenSSL without HelloRetryRequest.
@@ -149,7 +149,7 @@
 
 (test resumption-against-openssl-with-hrr
   "Session resumption across a HelloRetryRequest.  The server is limited
-   to X25519, and pure-tls's initial key share is X25519MLKEM768, so the
+   to X25519, and boomer's initial key share is X25519MLKEM768, so the
    server must send HRR.  The binder in the second ClientHello must then
    cover message_hash(ClientHello1) || HelloRetryRequest || Truncate(CH2).
    Any server without ML-KEM support (e.g. Java-based servers such as

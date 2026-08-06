@@ -1,4 +1,4 @@
-;;; package.lisp --- Package definitions for pure-tls
+;;; package.lisp --- Package definitions for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -6,7 +6,7 @@
 
 (in-package #:cl-user)
 
-(defpackage #:pure-tls
+(defpackage #:boomer
   (:use #:cl #:trivial-gray-streams)
   (:export
    ;; Stream creation

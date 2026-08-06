@@ -7,7 +7,7 @@
 ;;; Tests for the TLS 1.3 record layer including framing,
 ;;; encryption, and padding.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (def-suite record-tests
   :description "Tests for TLS record layer")
@@ -37,18 +37,18 @@
 
 (test content-type-constants
   "Verify content type constants"
-  (is (= pure-tls::+content-type-change-cipher-spec+ 20))
-  (is (= pure-tls::+content-type-alert+ 21))
-  (is (= pure-tls::+content-type-handshake+ 22))
-  (is (= pure-tls::+content-type-application-data+ 23)))
+  (is (= boomer::+content-type-change-cipher-spec+ 20))
+  (is (= boomer::+content-type-alert+ 21))
+  (is (= boomer::+content-type-handshake+ 22))
+  (is (= boomer::+content-type-application-data+ 23)))
 
 ;;;; Record Size Limits
 
 (test record-size-constants
   "Verify record size limit constants"
-  (is (= pure-tls::+max-record-size+ 16384)
+  (is (= boomer::+max-record-size+ 16384)
       "Max record size should be 2^14 (16384)")
-  (is (= pure-tls::+max-record-size-with-padding+ 16640)
+  (is (= boomer::+max-record-size-with-padding+ 16640)
       "Max encrypted record should be 2^14 + 256 (16640) per RFC 8446 §5.4"))
 
 (test full-size-record-roundtrip
@@ -56,21 +56,21 @@
    correctly with both cipher suites.  Regression for the padding-cap term
    in tls13-encrypt-record going negative above content-len 16367, which
    once shrank the inner buffer below the content length."
-  (dolist (suite (list pure-tls::+tls-chacha20-poly1305-sha256+
-                       pure-tls::+tls-aes-128-gcm-sha256+))
-    (dolist (len (list 16367 16368 pure-tls::+max-record-size+))
-      (let* ((key (pure-tls::make-octet-vector 32))
-             (iv (pure-tls::make-octet-vector 12))
-             (enc (pure-tls::make-aead suite key iv))
-             (dec (pure-tls::make-aead suite key iv))
-             (pt (pure-tls::make-octet-vector len)))
+  (dolist (suite (list boomer::+tls-chacha20-poly1305-sha256+
+                       boomer::+tls-aes-128-gcm-sha256+))
+    (dolist (len (list 16367 16368 boomer::+max-record-size+))
+      (let* ((key (boomer::make-octet-vector 32))
+             (iv (boomer::make-octet-vector 12))
+             (enc (boomer::make-aead suite key iv))
+             (dec (boomer::make-aead suite key iv))
+             (pt (boomer::make-octet-vector len)))
         (dotimes (i len) (setf (aref pt i) (mod i 251)))
-        (let* ((rec (pure-tls::tls13-encrypt-record enc 23 pt))
-               (hdr (pure-tls::octet-vector 23 3 3
+        (let* ((rec (boomer::tls13-encrypt-record enc 23 pt))
+               (hdr (boomer::octet-vector 23 3 3
                                             (ldb (byte 8 8) (length rec))
                                             (ldb (byte 8 0) (length rec)))))
           (multiple-value-bind (out content-type)
-              (pure-tls::tls13-decrypt-record dec rec hdr)
+              (boomer::tls13-decrypt-record dec rec hdr)
             (is (= content-type 23)
                 "suite ~4,'0X len ~D: content type survives" suite len)
             (is (equalp out pt)
@@ -121,48 +121,48 @@
 
 (test record-padding-policy-nil
   "Test no padding policy"
-  (let ((pure-tls:*record-padding-policy* nil))
+  (let ((boomer:*record-padding-policy* nil))
     ;; With nil policy, no extra padding should be added
-    (is (null pure-tls:*record-padding-policy*)
+    (is (null boomer:*record-padding-policy*)
         "Nil padding policy should be nil")))
 
 (test record-padding-policy-block
   "Test block padding policy"
-  (let ((pure-tls:*record-padding-policy* :block-256))
-    (is (eql pure-tls:*record-padding-policy* :block-256)
+  (let ((boomer:*record-padding-policy* :block-256))
+    (is (eql boomer:*record-padding-policy* :block-256)
         "Block-256 padding policy should be set")))
 
 ;;;; Alert Record Tests
 
 (test alert-level-constants
   "Verify alert level constants"
-  (is (= pure-tls::+alert-level-warning+ 1))
-  (is (= pure-tls::+alert-level-fatal+ 2)))
+  (is (= boomer::+alert-level-warning+ 1))
+  (is (= boomer::+alert-level-fatal+ 2)))
 
 (test alert-description-constants
   "Verify important alert description constants"
-  (is (zerop pure-tls:+alert-close-notify+))
-  (is (= pure-tls:+alert-unexpected-message+ 10))
-  (is (= pure-tls:+alert-bad-record-mac+ 20))
-  (is (= pure-tls:+alert-handshake-failure+ 40))
-  (is (= pure-tls:+alert-bad-certificate+ 42))
-  (is (= pure-tls:+alert-certificate-expired+ 45))
-  (is (= pure-tls:+alert-unknown-ca+ 48))
-  (is (= pure-tls:+alert-decode-error+ 50)))
+  (is (zerop boomer:+alert-close-notify+))
+  (is (= boomer:+alert-unexpected-message+ 10))
+  (is (= boomer:+alert-bad-record-mac+ 20))
+  (is (= boomer:+alert-handshake-failure+ 40))
+  (is (= boomer:+alert-bad-certificate+ 42))
+  (is (= boomer:+alert-certificate-expired+ 45))
+  (is (= boomer:+alert-unknown-ca+ 48))
+  (is (= boomer:+alert-decode-error+ 50)))
 
 ;;;; Handshake Record Tests
 
 (test handshake-type-constants
   "Verify handshake message type constants"
-  (is (= pure-tls::+handshake-client-hello+ 1))
-  (is (= pure-tls::+handshake-server-hello+ 2))
-  (is (= pure-tls::+handshake-new-session-ticket+ 4))
-  (is (= pure-tls::+handshake-encrypted-extensions+ 8))
-  (is (= pure-tls::+handshake-certificate+ 11))
-  (is (= pure-tls::+handshake-certificate-request+ 13))
-  (is (= pure-tls::+handshake-certificate-verify+ 15))
-  (is (= pure-tls::+handshake-finished+ 20))
-  (is (= pure-tls::+handshake-key-update+ 24)))
+  (is (= boomer::+handshake-client-hello+ 1))
+  (is (= boomer::+handshake-server-hello+ 2))
+  (is (= boomer::+handshake-new-session-ticket+ 4))
+  (is (= boomer::+handshake-encrypted-extensions+ 8))
+  (is (= boomer::+handshake-certificate+ 11))
+  (is (= boomer::+handshake-certificate-request+ 13))
+  (is (= boomer::+handshake-certificate-verify+ 15))
+  (is (= boomer::+handshake-finished+ 20))
+  (is (= boomer::+handshake-key-update+ 24)))
 
 ;;;; Test Runner
 
@@ -174,9 +174,9 @@
 
 (defun handover-cipher (fill)
   "An AEAD cipher with distinctive key and IV octets, for identity only."
-  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
-                       (pure-tls::make-octet-vector 16 :initial-element fill)
-                       (pure-tls::make-octet-vector 12 :initial-element (1+ fill))))
+  (boomer::make-aead boomer:+tls-aes-128-gcm-sha256+
+                       (boomer::make-octet-vector 16 :initial-element fill)
+                       (boomer::make-octet-vector 12 :initial-element (1+ fill))))
 
 (defun make-handover-stream (payload consumed
                              &optional (transport
@@ -188,55 +188,55 @@
 
    TRANSPORT is what the stream and, after a handover, the record layer write
    to; a caller passes one in when what it needs to watch is the transport."
-  (let* ((stream (make-instance 'pure-tls::tls-client-stream :stream transport))
-         (layer (pure-tls::make-record-layer transport)))
-    (setf (pure-tls::record-layer-read-cipher layer) (handover-cipher 1)
-          (pure-tls::record-layer-write-cipher layer) (handover-cipher 3)
-          (pure-tls::record-layer-cipher-suite layer) pure-tls:+tls-aes-128-gcm-sha256+)
-    (setf (pure-tls::tls-stream-record-layer stream) layer
-          (pure-tls::tls-stream-input-buffer stream) (copy-seq payload)
-          (pure-tls::tls-stream-input-position stream) 0)
+  (let* ((stream (make-instance 'boomer::tls-client-stream :stream transport))
+         (layer (boomer::make-record-layer transport)))
+    (setf (boomer::record-layer-read-cipher layer) (handover-cipher 1)
+          (boomer::record-layer-write-cipher layer) (handover-cipher 3)
+          (boomer::record-layer-cipher-suite layer) boomer:+tls-aes-128-gcm-sha256+)
+    (setf (boomer::tls-stream-record-layer stream) layer
+          (boomer::tls-stream-input-buffer stream) (copy-seq payload)
+          (boomer::tls-stream-input-position stream) 0)
     (dotimes (i consumed) (read-byte stream))
     stream))
 
 (defun handover-drain (layer)
   "Everything LAYER is currently holding as inbound plaintext, as one vector."
-  (let ((out (pure-tls::make-octet-vector
-              (pure-tls::record-layer-plaintext-available layer))))
-    (pure-tls::record-layer-take-plaintext layer out)
+  (let ((out (boomer::make-octet-vector
+              (boomer::record-layer-plaintext-available layer))))
+    (boomer::record-layer-take-plaintext layer out)
     out))
 
 (test handover-moves-unread-plaintext-to-record-layer
   "Adoption carries the unread tail of the stream's input buffer and no more."
-  (let* ((payload (pure-tls::octet-vector 10 11 12 13 14 15 16 17))
+  (let* ((payload (boomer::octet-vector 10 11 12 13 14 15 16 17))
          (consumed 3)
          (tail (subseq payload consumed))
          (stream (make-handover-stream payload consumed)))
     (is (= (- (length payload) consumed)
-           (pure-tls::tls-stream-buffer-remaining stream))
+           (boomer::tls-stream-buffer-remaining stream))
         "The fixture should leave exactly the tail unread on the stream")
-    (let ((layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
-      (is (zerop (pure-tls::tls-stream-buffer-remaining stream))
+    (let ((layer (boomer::adopt-record-layer-from-tls-stream stream)))
+      (is (zerop (boomer::tls-stream-buffer-remaining stream))
           "The stream should hold no inbound plaintext once it has been moved")
-      (is (= (length tail) (pure-tls::record-layer-plaintext-available layer))
+      (is (= (length tail) (boomer::record-layer-plaintext-available layer))
           "The layer should hold exactly the octets the application had not read")
       ;; Take the tail in two bites so the cursor has to advance between them.
-      (let ((out (pure-tls::make-octet-vector (length tail))))
-        (is (= 2 (pure-tls::record-layer-take-plaintext layer out :end 2))
+      (let ((out (boomer::make-octet-vector (length tail))))
+        (is (= 2 (boomer::record-layer-take-plaintext layer out :end 2))
             "A bounded take should write only as many octets as it was given room for")
         (is (= (- (length tail) 2)
-               (pure-tls::record-layer-plaintext-available layer))
+               (boomer::record-layer-plaintext-available layer))
             "The cursor should advance past what was taken")
         (is (= (- (length tail) 2)
-               (pure-tls::record-layer-take-plaintext layer out :start 2))
+               (boomer::record-layer-take-plaintext layer out :start 2))
             "The rest of the tail should follow")
         (is (equalp tail out)
             "Octets should arrive in order, none lost and none repeated")
-        (is (zerop (pure-tls::record-layer-plaintext-available layer))
+        (is (zerop (boomer::record-layer-plaintext-available layer))
             "The layer should be empty once the tail has been taken")
-        (is (null (pure-tls::record-layer-in-plaintext layer))
+        (is (null (boomer::record-layer-in-plaintext layer))
             "A drained layer should release the vector rather than hold an empty one")
-        (is (zerop (pure-tls::record-layer-take-plaintext layer out))
+        (is (zerop (boomer::record-layer-take-plaintext layer out))
             "A drained layer should yield nothing rather than repeat itself")))))
 
 (test handover-tail-check-rejects-both-mistakes
@@ -244,11 +244,11 @@
    Dropping the leftover loses the tail; carrying the whole input buffer across
    replays octets the application already read.  Both are checked here against
    the same comparison the test above passes, so passing it means something."
-  (let* ((payload (pure-tls::octet-vector 10 11 12 13 14 15 16 17))
+  (let* ((payload (boomer::octet-vector 10 11 12 13 14 15 16 17))
          (consumed 3)
          (tail (subseq payload consumed)))
     (flet ((adopted (&rest keys)
-             (apply #'pure-tls::adopt-record-layer
+             (apply #'boomer::adopt-record-layer
                     (flexi-streams:make-in-memory-output-stream)
                     :read-cipher (handover-cipher 1)
                     :write-cipher (handover-cipher 3)
@@ -273,7 +273,7 @@
 
 (defun record-octets (content-type body)
   "One whole TLS record as it appears on the wire: five header octets and BODY."
-  (let ((wire (pure-tls::make-octet-vector (+ 5 (length body)))))
+  (let ((wire (boomer::make-octet-vector (+ 5 (length body)))))
     (setf (aref wire 0) content-type
           (aref wire 1) 3
           (aref wire 2) 3
@@ -297,34 +297,34 @@
    has watched go red is not a guard: a layer holding nothing reads through as
    it always has, and a layer holding something refuses and keeps the record for
    afterwards."
-  (let ((body (pure-tls::octet-vector 1 2 3)))
+  (let ((body (boomer::octet-vector 1 2 3)))
     ;; Holding nothing: the read goes through to the transport.
-    (let ((layer (pure-tls::make-record-layer
-                  (record-on-the-wire pure-tls::+content-type-handshake+ body))))
-      (multiple-value-bind (content-type fragment) (pure-tls::record-layer-read layer)
-        (is (= pure-tls::+content-type-handshake+ content-type)
+    (let ((layer (boomer::make-record-layer
+                  (record-on-the-wire boomer::+content-type-handshake+ body))))
+      (multiple-value-bind (content-type fragment) (boomer::record-layer-read layer)
+        (is (= boomer::+content-type-handshake+ content-type)
             "A layer holding no plaintext should read the record it was sent")
         (is (equalp body fragment)
             "and hand back the octets that record carried")))
     ;; Holding something: the same call refuses, and says how much is waiting.
-    (let ((layer (pure-tls::make-record-layer
-                  (record-on-the-wire pure-tls::+content-type-handshake+ body)))
-          (held (pure-tls::octet-vector 9 9)))
-      (setf (pure-tls::record-layer-in-plaintext layer) held)
-      (signals pure-tls::tls-plaintext-pending
-        (pure-tls::record-layer-read layer))
-      (is (= 2 (handler-case (progn (pure-tls::record-layer-read layer) nil)
-                 (pure-tls::tls-plaintext-pending (condition)
-                   (pure-tls::tls-plaintext-pending-available condition))))
+    (let ((layer (boomer::make-record-layer
+                  (record-on-the-wire boomer::+content-type-handshake+ body)))
+          (held (boomer::octet-vector 9 9)))
+      (setf (boomer::record-layer-in-plaintext layer) held)
+      (signals boomer::tls-plaintext-pending
+        (boomer::record-layer-read layer))
+      (is (= 2 (handler-case (progn (boomer::record-layer-read layer) nil)
+                 (boomer::tls-plaintext-pending (condition)
+                   (boomer::tls-plaintext-pending-available condition))))
           "The refusal should be specific enough to handle on its own and should
            name how many octets are waiting")
-      (let ((sink (pure-tls::make-octet-vector 2)))
-        (pure-tls::record-layer-take-plaintext layer sink)
+      (let ((sink (boomer::make-octet-vector 2)))
+        (boomer::record-layer-take-plaintext layer sink)
         (is (equalp held sink)
             "The held octets should come out first, which is the ordering the
              refusal exists to keep"))
-      (multiple-value-bind (content-type fragment) (pure-tls::record-layer-read layer)
-        (is (= pure-tls::+content-type-handshake+ content-type)
+      (multiple-value-bind (content-type fragment) (boomer::record-layer-read layer)
+        (is (= boomer::+content-type-handshake+ content-type)
             "The record was held back rather than lost")
         (is (equalp body fragment)
             "and arrives intact once the plaintext in front of it is taken")))))
@@ -338,29 +338,29 @@
 (defun outbound-cipher ()
   "A live AEAD cipher for the outbound tests.  Key and IV are fixed so runs are
    reproducible; nothing here decrypts, so no peer needs them."
-  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
-                       (pure-tls::make-octet-vector 16 :initial-element 7)
-                       (pure-tls::make-octet-vector 12 :initial-element 9)))
+  (boomer::make-aead boomer:+tls-aes-128-gcm-sha256+
+                       (boomer::make-octet-vector 16 :initial-element 7)
+                       (boomer::make-octet-vector 12 :initial-element 9)))
 
 (defun outbound-layer (cipher &key (max-send-fragment 16))
   "A record layer with no stream at all.  Passing NIL where the stream goes is
    part of the point: this path hands out octets and must never reach for a
    transport of its own."
-  (let ((layer (pure-tls::make-record-layer nil :max-send-fragment max-send-fragment)))
-    (setf (pure-tls::record-layer-write-cipher layer) cipher
-          (pure-tls::record-layer-cipher-suite layer) pure-tls:+tls-aes-128-gcm-sha256+)
+  (let ((layer (boomer::make-record-layer nil :max-send-fragment max-send-fragment)))
+    (setf (boomer::record-layer-write-cipher layer) cipher
+          (boomer::record-layer-cipher-suite layer) boomer:+tls-aes-128-gcm-sha256+)
     layer))
 
 (defun counting-payload (size)
   "SIZE octets that all differ from their neighbours, so a span taken from the
    wrong place is visible rather than plausible."
-  (let ((payload (pure-tls::make-octet-vector size)))
+  (let ((payload (boomer::make-octet-vector size)))
     (dotimes (i size payload)
       (setf (aref payload i) (mod i 251)))))
 
 (defun outbound-sequence-number (layer)
   "How many records LAYER's write cipher has encrypted."
-  (pure-tls::aead-cipher-sequence-number (pure-tls::record-layer-write-cipher layer)))
+  (boomer::aead-cipher-sequence-number (boomer::record-layer-write-cipher layer)))
 
 (defun drain-outbound (layer accept)
   "Run LAYER's outbound path to exhaustion against a transport that takes at
@@ -370,7 +370,7 @@
                                 :adjustable t :fill-pointer 0))
         (records '()))
     (loop
-      (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+      (multiple-value-bind (record start end) (boomer::record-layer-pending-output layer)
         (when (null record)
           (return))
         (unless (eq record (first records))
@@ -378,7 +378,7 @@
         (let ((taken (min accept (- end start))))
           (loop for i from start below (+ start taken)
                 do (vector-push-extend (aref record i) received))
-          (pure-tls::record-layer-ack-output layer taken))))
+          (boomer::record-layer-ack-output layer taken))))
     (values (coerce received '(simple-array (unsigned-byte 8) (*)))
             (nreverse records))))
 
@@ -395,16 +395,16 @@
   (let* ((cipher (outbound-cipher))
          (layer (outbound-layer cipher :max-send-fragment 16))
          (payload (counting-payload 16)))
-    (is (null (pure-tls::record-layer-stream layer))
+    (is (null (boomer::record-layer-stream layer))
         "This path works for a caller that has no stream to give the layer")
     (is (zerop (outbound-sequence-number layer))
         "A fresh cipher has spent no sequence number yet")
-    (is (= 16 (pure-tls::record-layer-submit-plaintext
-               layer pure-tls::+content-type-application-data+ payload))
+    (is (= 16 (boomer::record-layer-submit-plaintext
+               layer boomer::+content-type-application-data+ payload))
         "Submitting should stage every octet it was given")
     (is (zerop (outbound-sequence-number layer))
         "Submitting stages plaintext and encrypts nothing")
-    (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+    (multiple-value-bind (record start end) (boomer::record-layer-pending-output layer)
       (is (not (null record))
           "The layer should offer the record it framed")
       (is (= 0 start)
@@ -413,17 +413,17 @@
           "and runs to its last")
       (is (= 1 (outbound-sequence-number layer))
           "Framing one record costs exactly one sequence number")
-      (is (= pure-tls::+content-type-application-data+ (aref record 0))
+      (is (= boomer::+content-type-application-data+ (aref record 0))
           "An encrypted record goes out under the application_data outer type")
       (is (= (- end 5) (+ (ash (aref record 3) 8) (aref record 4)))
           "and its header declares the body length that follows it")
       (let ((framed (copy-seq record)))
         ;; The transport takes seven octets this time round and no more.
-        (is (= (- end 7) (pure-tls::record-layer-ack-output layer 7))
+        (is (= (- end 7) (boomer::record-layer-ack-output layer 7))
             "The rest of the record should still be outstanding")
         (is (= 1 (outbound-sequence-number layer))
             "Acknowledging part of a record must not encrypt anything")
-        (multiple-value-bind (again from to) (pure-tls::record-layer-pending-output layer)
+        (multiple-value-bind (again from to) (boomer::record-layer-pending-output layer)
           (is (eq record again)
               "The resumed record should be the very vector already produced")
           (is (= 7 from)
@@ -443,9 +443,9 @@
                exactly once, in order, with nothing repeated and nothing skipped")
           (is (= 1 (outbound-sequence-number layer))
               "and the whole record should have cost one sequence number")
-          (is (not (pure-tls::record-layer-output-pending-p layer))
+          (is (not (boomer::record-layer-output-pending-p layer))
               "A fully acknowledged submission leaves nothing pending")
-          (is (null (pure-tls::record-layer-out-source layer))
+          (is (null (boomer::record-layer-out-source layer))
               "and the layer lets go of the caller's buffer"))))))
 
 (test outbound-submission-is-fragmented-one-record-per-sequence-number
@@ -455,22 +455,22 @@
   (let* ((cipher (outbound-cipher))
          (layer (outbound-layer cipher :max-send-fragment 16))
          (payload (counting-payload 40)))
-    (pure-tls::record-layer-submit-plaintext
-     layer pure-tls::+content-type-application-data+ payload)
+    (boomer::record-layer-submit-plaintext
+     layer boomer::+content-type-application-data+ payload)
     (multiple-value-bind (received records) (drain-outbound layer 3)
       (is (= 3 (length records))
           "Forty octets at sixteen to a record makes three records")
       (is (= 3 (outbound-sequence-number layer))
           "and three records cost three sequence numbers, one each")
       (dolist (record records)
-        (is (= pure-tls::+content-type-application-data+ (aref record 0))
+        (is (= boomer::+content-type-application-data+ (aref record 0))
             "Every encrypted record goes out under the application_data type")
         (is (= (- (length record) 5) (+ (ash (aref record 3) 8) (aref record 4)))
             "and declares the body length that follows its header"))
       (is (equalp (apply #'concatenate '(vector (unsigned-byte 8)) records)
                   received)
           "The transport should receive exactly the records the layer framed")
-      (is (not (pure-tls::record-layer-output-pending-p layer))
+      (is (not (boomer::record-layer-output-pending-p layer))
           "and the layer should be idle once they have all been acknowledged"))))
 
 (test outbound-submit-refuses-to-replace-a-draining-submission
@@ -483,21 +483,21 @@
          (layer (outbound-layer cipher :max-send-fragment 16))
          (staged (counting-payload 40))
          (other (counting-payload 8)))
-    (is (= 40 (pure-tls::record-layer-submit-plaintext
-               layer pure-tls::+content-type-application-data+ staged)))
-    (signals pure-tls::tls-output-in-flight
-      (pure-tls::record-layer-submit-plaintext
-       layer pure-tls::+content-type-application-data+ other))
+    (is (= 40 (boomer::record-layer-submit-plaintext
+               layer boomer::+content-type-application-data+ staged)))
+    (signals boomer::tls-output-in-flight
+      (boomer::record-layer-submit-plaintext
+       layer boomer::+content-type-application-data+ other))
     (let ((acked (multiple-value-bind (record start end)
-                     (pure-tls::record-layer-pending-output layer)
+                     (boomer::record-layer-pending-output layer)
                    (declare (ignore record start))
                    (let ((half (floor end 2)))
-                     (is (plusp (pure-tls::record-layer-ack-output layer half))
+                     (is (plusp (boomer::record-layer-ack-output layer half))
                          "Half a record out leaves the other half outstanding")
                      half))))
-      (signals pure-tls::tls-output-in-flight
-        (pure-tls::record-layer-submit-plaintext
-         layer pure-tls::+content-type-application-data+ other))
+      (signals boomer::tls-output-in-flight
+        (boomer::record-layer-submit-plaintext
+         layer boomer::+content-type-application-data+ other))
       (multiple-value-bind (received records) (drain-outbound layer 64)
         (is (= 3 (length records))
             "The refusals should leave the staged submission exactly as it was")
@@ -506,8 +506,8 @@
         (is (= (- (reduce #'+ records :key #'length) acked) (length received))
             "The transport receives the rest of the part-sent record and both of
              the records after it, and nothing twice")))
-    (is (= 8 (pure-tls::record-layer-submit-plaintext
-              layer pure-tls::+content-type-application-data+ other))
+    (is (= 8 (boomer::record-layer-submit-plaintext
+              layer boomer::+content-type-application-data+ other))
         "A drained layer takes the next submission")))
 
 (test outbound-acknowledgement-past-the-end-of-the-span-is-refused
@@ -519,27 +519,27 @@
   (let* ((cipher (outbound-cipher))
          (layer (outbound-layer cipher :max-send-fragment 16))
          (payload (counting-payload 16)))
-    (signals pure-tls::tls-output-ack-overrun
-      (pure-tls::record-layer-ack-output layer 1))
-    (is (zerop (pure-tls::record-layer-ack-output layer 0))
+    (signals boomer::tls-output-ack-overrun
+      (boomer::record-layer-ack-output layer 1))
+    (is (zerop (boomer::record-layer-ack-output layer 0))
         "Acknowledging nothing when nothing is outstanding is not an error")
     (signals type-error
-      (pure-tls::record-layer-ack-output layer -1))
-    (pure-tls::record-layer-submit-plaintext
-     layer pure-tls::+content-type-application-data+ payload)
-    (multiple-value-bind (record start end) (pure-tls::record-layer-pending-output layer)
+      (boomer::record-layer-ack-output layer -1))
+    (boomer::record-layer-submit-plaintext
+     layer boomer::+content-type-application-data+ payload)
+    (multiple-value-bind (record start end) (boomer::record-layer-pending-output layer)
       (declare (ignore record start))
-      (signals pure-tls::tls-output-ack-overrun
-        (pure-tls::record-layer-ack-output layer (1+ end)))
-      (is (= end (pure-tls::record-layer-ack-output layer 0))
+      (signals boomer::tls-output-ack-overrun
+        (boomer::record-layer-ack-output layer (1+ end)))
+      (is (= end (boomer::record-layer-ack-output layer 0))
           "A refused acknowledgement should not have moved the cursor")
-      (is (= (- end 4) (pure-tls::record-layer-ack-output layer 4))
+      (is (= (- end 4) (boomer::record-layer-ack-output layer 4))
           "A count within the span advances it")
-      (signals pure-tls::tls-output-ack-overrun
-        (pure-tls::record-layer-ack-output layer (- end 3)))
-      (is (= (- end 4) (pure-tls::record-layer-ack-output layer 0))
+      (signals boomer::tls-output-ack-overrun
+        (boomer::record-layer-ack-output layer (- end 3)))
+      (is (= (- end 4) (boomer::record-layer-ack-output layer 0))
           "and the cursor still stands where the transport left it")
-      (multiple-value-bind (again from to) (pure-tls::record-layer-pending-output layer)
+      (multiple-value-bind (again from to) (boomer::record-layer-pending-output layer)
         (declare (ignore again to))
         (is (= 4 from)
             "so the record resumes from the last count the layer believed")))))
@@ -547,15 +547,15 @@
 (test outbound-records-without-a-cipher-carry-their-own-content-type
   "Before keys are installed a framed record goes out in the clear under the
    content type it was submitted with, which is what the handshake needs."
-  (let ((layer (pure-tls::make-record-layer nil :max-send-fragment 4))
+  (let ((layer (boomer::make-record-layer nil :max-send-fragment 4))
         (payload (counting-payload 6)))
-    (pure-tls::record-layer-submit-plaintext
-     layer pure-tls::+content-type-handshake+ payload)
+    (boomer::record-layer-submit-plaintext
+     layer boomer::+content-type-handshake+ payload)
     (multiple-value-bind (received records) (drain-outbound layer 2)
       (is (= 2 (length records))
           "Six octets at four to a record makes two records")
       (dolist (record records)
-        (is (= pure-tls::+content-type-handshake+ (aref record 0))
+        (is (= boomer::+content-type-handshake+ (aref record 0))
             "An unencrypted record carries the submitted content type itself"))
       (is (equalp payload
                   (concatenate '(vector (unsigned-byte 8))
@@ -576,17 +576,17 @@
    with, which is what the two ends of a connection hold.  No nonce encrypts
    twice: each fixture record is encrypted once, by the sender object, and the
    layer's object only ever decrypts."
-  (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
-                       (pure-tls::make-octet-vector 16 :initial-element 5)
-                       (pure-tls::make-octet-vector 12 :initial-element 11)))
+  (boomer::make-aead boomer:+tls-aes-128-gcm-sha256+
+                       (boomer::make-octet-vector 16 :initial-element 5)
+                       (boomer::make-octet-vector 12 :initial-element 11)))
 
 (defun inbound-layer (&key read-cipher)
   "A record layer with no stream at all, ready to be fed ciphertext."
-  (let ((layer (pure-tls::make-record-layer nil)))
+  (let ((layer (boomer::make-record-layer nil)))
     (when read-cipher
-      (setf (pure-tls::record-layer-read-cipher layer) read-cipher
-            (pure-tls::record-layer-cipher-suite layer)
-            pure-tls:+tls-aes-128-gcm-sha256+))
+      (setf (boomer::record-layer-read-cipher layer) read-cipher
+            (boomer::record-layer-cipher-suite layer)
+            boomer:+tls-aes-128-gcm-sha256+))
     layer))
 
 (defun feed-record (layer wire chunk)
@@ -595,7 +595,7 @@
    in it.  Returns how many octets it took altogether."
   (let ((at 0))
     (loop while (< at (length wire))
-          do (let ((taken (pure-tls::record-layer-feed-ciphertext
+          do (let ((taken (boomer::record-layer-feed-ciphertext
                            layer wire
                            :start at :end (min (length wire) (+ at chunk)))))
                (when (zerop taken) (return))
@@ -605,18 +605,18 @@
 (defun taken-message (layer)
   "The body of the finished record LAYER holds that is not application data, or
    NIL when it holds none."
-  (nth-value 1 (pure-tls::record-layer-take-message layer)))
+  (nth-value 1 (boomer::record-layer-take-message layer)))
 
 (defun forget-inbound-progress (layer &key (header t) (body t))
   "Throw away what LAYER has read of the record it is part way through, which is
    what a reader whose place lives on the stack loses at every suspension.  The
    controls below use it to show what the inbound cursors are buying."
   (when header
-    (setf (pure-tls::record-layer-in-phase layer) :idle
-          (pure-tls::record-layer-in-header layer) 0
-          (pure-tls::record-layer-in-header-seen layer) 0))
+    (setf (boomer::record-layer-in-phase layer) :idle
+          (boomer::record-layer-in-header layer) 0
+          (boomer::record-layer-in-header-seen layer) 0))
   (when body
-    (setf (pure-tls::record-layer-in-body-filled layer) 0))
+    (setf (boomer::record-layer-in-body-filled layer) 0))
   layer)
 
 (test inbound-record-fed-one-octet-at-a-time-matches-a-single-feed
@@ -630,26 +630,26 @@
    it: five separate first octets never add up to a header, so nothing arrives
    at all."
   (let* ((body (counting-payload 23))
-         (wire (record-octets pure-tls::+content-type-handshake+ body)))
+         (wire (record-octets boomer::+content-type-handshake+ body)))
     (let ((layer (inbound-layer)))
-      (is (null (pure-tls::record-layer-stream layer))
+      (is (null (boomer::record-layer-stream layer))
           "This path serves a caller that has no stream to give the layer")
-      (is (= 5 (pure-tls::record-layer-input-wanted layer))
+      (is (= 5 (boomer::record-layer-input-wanted layer))
           "An idle layer wants a header before anything else")
-      (is (= (length wire) (pure-tls::record-layer-feed-ciphertext layer wire))
+      (is (= (length wire) (boomer::record-layer-feed-ciphertext layer wire))
           "A whole record offered in one call is taken in one call")
       (is (equalp body (taken-message layer))
           "and its body arrives intact"))
     (let ((layer (inbound-layer)))
       (is (= (length wire) (feed-record layer wire 1))
           "The same record offered an octet at a time is taken an octet at a time")
-      (is (not (pure-tls::record-layer-input-pending-p layer))
+      (is (not (boomer::record-layer-input-pending-p layer))
           "and the layer is between records once the last octet is in")
       (is (equalp body (taken-message layer))
           "and the body is the same as when the record arrived whole"))
     (let ((layer (inbound-layer)))
       (dotimes (i (length wire))
-        (pure-tls::record-layer-feed-ciphertext layer wire :start i :end (1+ i))
+        (boomer::record-layer-feed-ciphertext layer wire :start i :end (1+ i))
         (forget-inbound-progress layer))
       (let ((lost (taken-message layer)))
         (is (not (equalp body lost))
@@ -670,29 +670,29 @@
    which is what a layer that tracked only half its place would do.  The
    comparison rejects it."
   (let* ((body (counting-payload 9))
-         (wire (record-octets pure-tls::+content-type-handshake+ body)))
+         (wire (record-octets boomer::+content-type-handshake+ body)))
     (loop for cut from 1 below (length wire)
           do (let ((layer (inbound-layer)))
-               (is (= cut (pure-tls::record-layer-feed-ciphertext
+               (is (= cut (boomer::record-layer-feed-ciphertext
                            layer wire :start 0 :end cut))
                    "The layer should take the whole of the first piece")
-               (is (pure-tls::record-layer-input-pending-p layer)
+               (is (boomer::record-layer-input-pending-p layer)
                    "and should know it is part way through a record")
                (is (= (if (< cut 5) (- 5 cut) (- (length wire) cut))
-                      (pure-tls::record-layer-input-wanted layer))
+                      (boomer::record-layer-input-wanted layer))
                    "and should say what would finish the unit it is on, which is
                     the header until five octets are in and the body after")
                (is (= (- (length wire) cut)
-                      (pure-tls::record-layer-feed-ciphertext
+                      (boomer::record-layer-feed-ciphertext
                        layer wire :start cut :end (length wire)))
                    "It should then take the rest")
                (is (equalp body (taken-message layer))
                    "and hand over the record the two pieces make up")))
     (let ((layer (inbound-layer))
           (cut 7))
-      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end cut)
+      (boomer::record-layer-feed-ciphertext layer wire :start 0 :end cut)
       (forget-inbound-progress layer :header nil)
-      (pure-tls::record-layer-feed-ciphertext layer wire :start cut :end (length wire))
+      (boomer::record-layer-feed-ciphertext layer wire :start cut :end (length wire))
       (is (null (taken-message layer))
           "Losing the body cursor at the cut should not satisfy the comparison"))))
 
@@ -711,50 +711,50 @@
    block applies the conflation at exactly the point the empty hand-overs
    happened, so the difference is shown rather than asserted."
   (let* ((body (counting-payload 6))
-         (wire (record-octets pure-tls::+content-type-handshake+ body))
-         (empty (pure-tls::make-octet-vector 0)))
+         (wire (record-octets boomer::+content-type-handshake+ body))
+         (empty (boomer::make-octet-vector 0)))
     (let ((layer (inbound-layer)))
-      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (boomer::record-layer-feed-ciphertext layer wire :start 0 :end 3)
       (dotimes (i 4)
-        (is (zerop (pure-tls::record-layer-feed-ciphertext layer empty))
+        (is (zerop (boomer::record-layer-feed-ciphertext layer empty))
             "A hand-over of no octets takes nothing")
-        (is (zerop (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end 3))
+        (is (zerop (boomer::record-layer-feed-ciphertext layer wire :start 3 :end 3))
             "and an empty span of a full buffer says the same thing"))
-      (is (not (pure-tls::record-layer-transport-eof-p layer))
+      (is (not (boomer::record-layer-transport-eof-p layer))
           "None of that says the transport is finished")
-      (is (= 2 (pure-tls::record-layer-input-wanted layer))
+      (is (= 2 (boomer::record-layer-input-wanted layer))
           "and the layer is still waiting on the rest of the header")
-      (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end (length wire))
+      (boomer::record-layer-feed-ciphertext layer wire :start 3 :end (length wire))
       (is (equalp body (taken-message layer))
           "so the record arrives once the octets do"))
     (let ((layer (inbound-layer)))
-      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
-      (is (not (pure-tls::record-layer-transport-eof-p layer))
+      (boomer::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (is (not (boomer::record-layer-transport-eof-p layer))
           "The same layer, in the same place in the same record")
-      (signals pure-tls:tls-decode-error
-        (pure-tls::record-layer-note-transport-eof layer))
-      (is (pure-tls::record-layer-transport-eof-p layer)
+      (signals boomer:tls-decode-error
+        (boomer::record-layer-note-transport-eof layer))
+      (is (boomer::record-layer-transport-eof-p layer)
           "now holds the fact the empty hand-overs never established")
-      (is (zerop (pure-tls::record-layer-input-wanted layer))
+      (is (zerop (boomer::record-layer-input-wanted layer))
           "The layer asks for nothing more once the transport is gone")
       (signals simple-error
-        (pure-tls::record-layer-feed-ciphertext layer wire :start 3 :end (length wire)))
+        (boomer::record-layer-feed-ciphertext layer wire :start 3 :end (length wire)))
       (is (null (taken-message layer))
           "and a truncated record is not delivered as though it were whole"))
     (let ((layer (inbound-layer)))
-      (pure-tls::record-layer-feed-ciphertext layer wire)
-      (pure-tls::record-layer-note-transport-eof layer)
-      (is (pure-tls::record-layer-transport-eof-p layer)
+      (boomer::record-layer-feed-ciphertext layer wire)
+      (boomer::record-layer-note-transport-eof layer)
+      (is (boomer::record-layer-transport-eof-p layer)
           "A close between records is noted and is not an error")
       (is (equalp body (taken-message layer))
           "and the record that had already arrived is still there to take"))
     (let ((layer (inbound-layer)))
-      (pure-tls::record-layer-feed-ciphertext layer wire :start 0 :end 3)
-      (handler-case (pure-tls::record-layer-note-transport-eof layer)
-        (pure-tls:tls-decode-error () nil))
+      (boomer::record-layer-feed-ciphertext layer wire :start 0 :end 3)
+      (handler-case (boomer::record-layer-note-transport-eof layer)
+        (boomer:tls-decode-error () nil))
       (is (not (equalp body
                        (handler-case
-                           (progn (pure-tls::record-layer-feed-ciphertext
+                           (progn (boomer::record-layer-feed-ciphertext
                                    layer wire :start 3 :end (length wire))
                                   (taken-message layer))
                          (error () nil))))
@@ -778,22 +778,22 @@
   (let* ((sender (inbound-cipher))
          (layer (inbound-layer :read-cipher (inbound-cipher)))
          (payload (counting-payload 12))
-         (ticket (pure-tls::octet-vector 4 0 0 3 7 8 9))
+         (ticket (boomer::octet-vector 4 0 0 3 7 8 9))
          (app-wire (record-octets
-                    pure-tls::+content-type-application-data+
-                    (pure-tls::tls13-encrypt-record
-                     sender pure-tls::+content-type-application-data+ payload)))
+                    boomer::+content-type-application-data+
+                    (boomer::tls13-encrypt-record
+                     sender boomer::+content-type-application-data+ payload)))
          (ticket-wire (record-octets
-                       pure-tls::+content-type-application-data+
-                       (pure-tls::tls13-encrypt-record
-                        sender pure-tls::+content-type-handshake+ ticket))))
+                       boomer::+content-type-application-data+
+                       (boomer::tls13-encrypt-record
+                        sender boomer::+content-type-handshake+ ticket))))
     (is (= (length app-wire) (feed-record layer app-wire 1))
         "An encrypted record dribbling in an octet at a time is taken whole")
-    (is (= (length payload) (pure-tls::record-layer-plaintext-available layer))
+    (is (= (length payload) (boomer::record-layer-plaintext-available layer))
         "and what a reader can take is the decrypted payload")
-    (is (not (pure-tls::record-layer-message-available-p layer))
+    (is (not (boomer::record-layer-message-available-p layer))
         "Application data is not surfaced as a message")
-    (is (zerop (pure-tls::record-layer-feed-ciphertext layer ticket-wire))
+    (is (zerop (boomer::record-layer-feed-ciphertext layer ticket-wire))
         "The layer takes nothing while it still holds a finished result, rather
          than making room by overwriting one")
     (let ((taken (handover-drain layer)))
@@ -805,17 +805,17 @@
            one plaintext buffer for every content type would have produced"))
     (is (= (length ticket-wire) (feed-record layer ticket-wire 1))
         "With the payload taken the next record goes in")
-    (is (zerop (pure-tls::record-layer-plaintext-available layer))
+    (is (zerop (boomer::record-layer-plaintext-available layer))
         "It adds nothing to the application's byte stream")
-    (is (pure-tls::record-layer-message-available-p layer)
+    (is (boomer::record-layer-message-available-p layer)
         "and waits as a message instead")
     (multiple-value-bind (content-type message)
-        (pure-tls::record-layer-take-message layer)
-      (is (= pure-tls::+content-type-handshake+ content-type)
+        (boomer::record-layer-take-message layer)
+      (is (= boomer::+content-type-handshake+ content-type)
           "reported under the inner content type the record actually carried")
       (is (equalp ticket message)
           "with its octets intact"))
-    (is (not (pure-tls::record-layer-message-available-p layer))
+    (is (not (boomer::record-layer-message-available-p layer))
         "and taking it leaves the layer ready for the next record")))
 
 ;;;; Ownership of the connection after the handover
@@ -860,26 +860,26 @@
    Each entry point is asked separately and any other error is reported as
    itself rather than as a refusal, so removing the guard shows up as one red
    per entry point instead of as the first one blowing up and hiding the rest."
-  (let* ((stream (make-handover-stream (pure-tls::octet-vector 1 2 3 4) 0))
-         (layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
-    (is (pure-tls::record-layer-p layer)
+  (let* ((stream (make-handover-stream (boomer::octet-vector 1 2 3 4) 0))
+         (layer (boomer::adopt-record-layer-from-tls-stream stream)))
+    (is (boomer::record-layer-p layer)
         "The handover should produce a layer")
-    (is (pure-tls::tls-stream-spent-p stream)
+    (is (boomer::tls-stream-spent-p stream)
         "and should leave the stream spent")
     (loop for (entry . call) in
           (list (cons "reading a byte" (lambda () (read-byte stream)))
                 (cons "reading a sequence"
-                      (lambda () (read-sequence (pure-tls::make-octet-vector 4)
+                      (lambda () (read-sequence (boomer::make-octet-vector 4)
                                                 stream)))
                 (cons "writing a byte" (lambda () (write-byte 65 stream)))
                 (cons "writing a sequence"
-                      (lambda () (write-sequence (pure-tls::octet-vector 65 66)
+                      (lambda () (write-sequence (boomer::octet-vector 65 66)
                                                  stream)))
                 (cons "flushing output" (lambda () (force-output stream)))
                 (cons "finishing output" (lambda () (finish-output stream))))
           do (multiple-value-bind (outcome report)
                  (handler-case (progn (funcall call) (values :allowed nil))
-                   (pure-tls::tls-stream-spent (refusal)
+                   (boomer::tls-stream-spent (refusal)
                      (values :refused (princ-to-string refusal)))
                    (error (other)
                      (values :some-other-error (princ-to-string other))))
@@ -892,8 +892,8 @@
     ;; does not refuse at all fails here too, rather than skipping the check.
     (is (eq :named
             (handler-case (progn (read-byte stream) :not-refused)
-              (pure-tls::tls-stream-spent (refusal)
-                (if (and (typep refusal 'pure-tls:tls-error)
+              (boomer::tls-stream-spent (refusal)
+                (if (and (typep refusal 'boomer:tls-error)
                          (search "reading a byte" (princ-to-string refusal)))
                     :named
                     :unnamed))))
@@ -904,39 +904,39 @@
   "The control for the refusals above.  A stream that has not been handed over
    reads, writes and flushes as it always did, so a refusal is a statement about
    this stream rather than about every stream."
-  (let* ((payload (pure-tls::octet-vector 1 2 3 4 5 6))
+  (let* ((payload (boomer::octet-vector 1 2 3 4 5 6))
          (stream (make-handover-stream payload 0)))
-    (is (not (pure-tls::tls-stream-spent-p stream))
+    (is (not (boomer::tls-stream-spent-p stream))
         "A stream that has not been handed over is not spent")
     (is (= 1 (read-byte stream))
         "It reads a byte")
-    (let ((taken (pure-tls::make-octet-vector 3)))
+    (let ((taken (boomer::make-octet-vector 3)))
       (is (= 3 (read-sequence taken stream))
           "It reads a sequence")
-      (is (equalp (pure-tls::octet-vector 2 3 4) taken)
+      (is (equalp (boomer::octet-vector 2 3 4) taken)
           "and hands back the octets the peer sent, in order"))
     (is (= 65 (write-byte 65 stream))
         "It takes a byte")
-    (write-sequence (pure-tls::octet-vector 66 67) stream)
-    (is (= 3 (pure-tls::tls-stream-output-position stream))
+    (write-sequence (boomer::octet-vector 66 67) stream)
+    (is (= 3 (boomer::tls-stream-output-position stream))
         "It takes a sequence, and holds what it was given")
     (finish-output stream)
-    (is (zerop (pure-tls::tls-stream-output-position stream))
+    (is (zerop (boomer::tls-stream-output-position stream))
         "and a flush puts the held octets through the record layer")))
 
 (test closing-spent-stream-leaves-the-transport-to-the-layer
   "Closing a spent stream shuts down the stream object and leaves the connection
    alone, because the transport belongs to the layer that took it."
   (let* ((transport (make-instance 'handover-probe-transport))
-         (stream (make-handover-stream (pure-tls::octet-vector 7 8 9) 0 transport))
-         (layer (pure-tls::adopt-record-layer-from-tls-stream stream)))
+         (stream (make-handover-stream (boomer::octet-vector 7 8 9) 0 transport))
+         (layer (boomer::adopt-record-layer-from-tls-stream stream)))
     (close stream)
-    (is (pure-tls::tls-stream-closed-p stream)
+    (is (boomer::tls-stream-closed-p stream)
         "The stream object closes")
     (is (not (probe-closed-p transport))
         "without closing the transport it no longer owns")
-    (pure-tls::record-layer-write-application-data
-     layer (pure-tls::octet-vector 10 11 12))
+    (boomer::record-layer-write-application-data
+     layer (boomer::octet-vector 10 11 12))
     (is (plusp (length (probe-octets transport)))
         "and the layer can still put a record on the wire afterwards")))
 
@@ -945,7 +945,7 @@
    close it, so leaving it open is something a spent stream does and not
    something CLOSE never got round to."
   (let* ((transport (make-instance 'handover-probe-transport))
-         (stream (make-handover-stream (pure-tls::octet-vector 7 8 9) 0 transport)))
+         (stream (make-handover-stream (boomer::octet-vector 7 8 9) 0 transport)))
     (close stream)
     (is (probe-closed-p transport)
         "A stream that owns its transport closes it")))
@@ -955,33 +955,33 @@
    started with.  There is no state in between, because a stream marked spent
    with nothing having taken the connection is a connection nobody owns."
   ;; Refused before anything moves: the caller tried to supply the plaintext.
-  (let* ((payload (pure-tls::octet-vector 20 21 22 23))
+  (let* ((payload (boomer::octet-vector 20 21 22 23))
          (stream (make-handover-stream payload 0)))
     (signals error
-      (pure-tls::adopt-record-layer-from-tls-stream stream :in-plaintext payload))
-    (is (not (pure-tls::tls-stream-spent-p stream))
+      (boomer::adopt-record-layer-from-tls-stream stream :in-plaintext payload))
+    (is (not (boomer::tls-stream-spent-p stream))
         "A refused handover leaves the stream unspent")
-    (is (= 4 (pure-tls::tls-stream-buffer-remaining stream))
+    (is (= 4 (boomer::tls-stream-buffer-remaining stream))
         "with its inbound plaintext untouched")
     (is (= 20 (read-byte stream))
         "and a reader picks up where it left off"))
   ;; Refused partway, after the plaintext has been taken off the stream: the
   ;; ciphers the layer requires are not there.
-  (let* ((payload (pure-tls::octet-vector 30 31 32 33))
+  (let* ((payload (boomer::octet-vector 30 31 32 33))
          (stream (make-handover-stream payload 1)))
-    (setf (pure-tls::record-layer-read-cipher
-           (pure-tls::tls-stream-record-layer stream))
+    (setf (boomer::record-layer-read-cipher
+           (boomer::tls-stream-record-layer stream))
           nil)
-    (signals error (pure-tls::adopt-record-layer-from-tls-stream stream))
-    (is (not (pure-tls::tls-stream-spent-p stream))
+    (signals error (boomer::adopt-record-layer-from-tls-stream stream))
+    (is (not (boomer::tls-stream-spent-p stream))
         "A handover that fails partway also leaves the stream unspent")
-    (is (= 3 (pure-tls::tls-stream-buffer-remaining stream))
+    (is (= 3 (boomer::tls-stream-buffer-remaining stream))
         "with the plaintext put back rather than lost between the two owners")
     (is (= 31 (read-byte stream))
         "and the next octet is the one the reader was owed")
     (write-byte 99 stream)
     (finish-output stream)
-    (is (zerop (pure-tls::tls-stream-output-position stream))
+    (is (zerop (boomer::tls-stream-output-position stream))
         "and the write side still works")))
 
 (defun run-record-tests ()

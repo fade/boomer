@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements the TLS 1.3 server handshake state machine.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Server Handshake State
 

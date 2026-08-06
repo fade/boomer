@@ -4,7 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; TLS Version Constants
 

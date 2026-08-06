@@ -1,10 +1,10 @@
-# Adapting OpenSSL Tests for pure-tls
+# Adapting OpenSSL Tests for boomer
 
-This document outlines the plan and process for adapting the comprehensive TLS test suite from the OpenSSL project to validate and improve the robustness of `pure-tls`.
+This document outlines the plan and process for adapting the comprehensive TLS test suite from the OpenSSL project to validate and improve the robustness of `boomer`.
 
 ## Goal
 
-The primary goal is to enhance the `pure-tls` test suite by leveraging the extensive, configuration-driven tests from OpenSSL, particularly those in `openssl/test/ssl-tests`. This will provide a higher degree of confidence in our implementation's correctness and interoperability.
+The primary goal is to enhance the `boomer` test suite by leveraging the extensive, configuration-driven tests from OpenSSL, particularly those in `openssl/test/ssl-tests`. This will provide a higher degree of confidence in our implementation's correctness and interoperability.
 
 ## Test Categories
 
@@ -32,19 +32,19 @@ The adaptation process will follow these steps:
 2.  **Test Execution Framework:**
     A new test runner will be created in `test/openssl-tests.lisp`. This runner will:
     - Iterate through the parsed test definitions.
-    - Programmatically configure a `pure-tls` server and client based on each test's parameters.
+    - Programmatically configure a `boomer` server and client based on each test's parameters.
     - Execute the TLS handshake.
     - Assert that the actual outcome matches the `ExpectedResult` from the `.cnf` file.
     - Validate expected alerts match RFC 8446 requirements, not just OpenSSL defaults.
 
 3.  **Certificate Management:**
-    The necessary test certificates and private keys will be copied from the OpenSSL source tree (`openssl/test/certs`) into the `pure-tls/test/certs` directory. This will ensure that the `pure-tls` test suite remains self-contained.
+    The necessary test certificates and private keys will be copied from the OpenSSL source tree (`openssl/test/certs`) into the `boomer/test/certs` directory. This will ensure that the `boomer` test suite remains self-contained.
 
 ## Action Plan
 
-- [x] **Step 1: Scaffolding:** Create `test/openssl-tests.lisp` and add it to the `pure-tls/test` ASDF system definition. Add `iparse` as a test dependency.
+- [x] **Step 1: Scaffolding:** Create `test/openssl-tests.lisp` and add it to the `boomer/test` ASDF system definition. Add `iparse` as a test dependency.
 - [x] **Step 2: Parser Implementation:** Implement the `.cnf` file parser using `iparse`. Target a minimal subset that handles the structure of `01-simple.cnf`.
-- [x] **Step 3: Certificate Integration:** Identify and copy the core certificates required for initial tests into `pure-tls/test/certs`.
+- [x] **Step 3: Certificate Integration:** Identify and copy the core certificates required for initial tests into `boomer/test/certs`.
 - [x] **Step 4: Initial Test Case:** Start with `ssl-tests/01-simple.cnf` - implement and pass a single, fundamental test case (e.g., a successful TLS 1.3 handshake) to validate the end-to-end framework.
 - [x] **Step 5: Expansion:** Incrementally add more test cases, focusing on:
     - TLS 1.3 Client and Server Authentication scenarios.
@@ -67,7 +67,7 @@ The OpenSSL test framework is **fully implemented** in `test/openssl-tests.lisp`
 - Skip reasons documented for unsupported features
 
 ### Test Execution (Complete)
-- Live TLS client/server execution using pure-tls
+- Live TLS client/server execution using boomer
 - Proper result comparison (Success/ClientFail/ServerFail)
 - FiveAM test suite integration
 
@@ -109,16 +109,16 @@ The OpenSSL test framework is **fully implemented** in `test/openssl-tests.lisp`
 
 Run tests with:
 ```bash
-sbcl --eval '(asdf:test-system :pure-tls)' --quit
+sbcl --eval '(asdf:test-system :boomer)' --quit
 # Or specifically:
-sbcl --eval '(asdf:load-system :pure-tls/test)' \
-     --eval '(fiveam:run! '\''pure-tls/test::openssl-tests)' \
+sbcl --eval '(asdf:load-system :boomer/test)' \
+     --eval '(fiveam:run! '\''boomer/test::openssl-tests)' \
      --quit
 ```
 
 ## Risks and Constraints
 
-- **Config surface area:** OpenSSL `.cnf` files include many options that are OpenSSL-specific or not implemented in `pure-tls`. Without strict scoping, the parser will become a time sink.
+- **Config surface area:** OpenSSL `.cnf` files include many options that are OpenSSL-specific or not implemented in `boomer`. Without strict scoping, the parser will become a time sink.
 - **Test semantics mismatch:** Some tests assert OpenSSL behaviors that are not required by RFC 8446/5280. These should be tagged as `SKIP` or `UNSUPPORTED` rather than failing.
 - **Certificate quirks:** OpenSSL’s test certs include intentionally non-standard or borderline cases. These are useful, but the expected outcome must be reviewed against RFC requirements, not OpenSSL defaults.
 - **Interop vs. conformance:** Some tests are about interop quirks rather than strict conformance. These should be categorized separately to avoid conflating failures.
@@ -141,8 +141,8 @@ Anything else should default to `SKIP` with a clear reason until explicitly supp
 Areas to expand for comprehensive testing:
 
 - **Session resumption / PSK** - OpenSSL tests for ticket-based resumption; our PSK support needs testing (currently auto-skipped)
-- **0-RTT early data** - Currently unsupported in pure-tls (auto-skipped)
-- **Post-handshake authentication** - Currently unsupported in pure-tls (auto-skipped)
+- **0-RTT early data** - Currently unsupported in boomer (auto-skipped)
+- **Post-handshake authentication** - Currently unsupported in boomer (auto-skipped)
 - **Server2 context switching** - SNI-based virtual hosting with multiple certificates
 
 ### Implemented

@@ -11,7 +11,7 @@
 ;;;
 ;;; This implementation is specifically for TLS ECH support.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; HPKE Constants
 

@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements CRL parsing and revocation checking per RFC 5280.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; CRL Structure
 ;;;

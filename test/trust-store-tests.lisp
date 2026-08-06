@@ -17,7 +17,7 @@
 ;;; These tests pin the trust source with SSL_CERT_FILE (a fixture bundle) so
 ;;; they do not depend on the host's real system trust store.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (require :sb-posix))
@@ -41,13 +41,13 @@ restoring the previous value afterwards."
 
 (defun context-root-count (ctx)
   "Number of trusted roots loaded into CTX (0 when the trust store is NIL)."
-  (let ((ts (pure-tls::tls-context-trust-store ctx)))
-    (if ts (length (pure-tls::trust-store-certificates ts)) 0)))
+  (let ((ts (boomer::tls-context-trust-store ctx)))
+    (if ts (length (boomer::trust-store-certificates ts)) 0)))
 
 (test verify-peer-auto-loads-system-roots
   "+verify-peer+ must auto-load the system trust store (UNKNOWN-CA regression)."
   (with-ssl-cert-file ((test-cert-path "self-signed-valid.pem"))
-    (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-peer+)))
+    (let ((ctx (boomer:make-tls-context :verify-mode boomer:+verify-peer+)))
       (is (plusp (context-root-count ctx))
           "+verify-peer+ context has an empty trust store; a presented ~
            certificate would fail with UNKNOWN-CA"))))
@@ -55,18 +55,18 @@ restoring the previous value afterwards."
 (test verify-required-auto-loads-system-roots
   "+verify-required+ still auto-loads the system trust store."
   (with-ssl-cert-file ((test-cert-path "self-signed-valid.pem"))
-    (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-required+)))
+    (let ((ctx (boomer:make-tls-context :verify-mode boomer:+verify-required+)))
       (is (plusp (context-root-count ctx))))))
 
 (test verify-none-does-not-auto-load
   "+verify-none+ must NOT auto-load a trust store."
   (with-ssl-cert-file ((test-cert-path "self-signed-valid.pem"))
-    (let ((ctx (pure-tls:make-tls-context :verify-mode pure-tls:+verify-none+)))
+    (let ((ctx (boomer:make-tls-context :verify-mode boomer:+verify-none+)))
       (is (zerop (context-root-count ctx))))))
 
 (test explicit-ca-file-overrides-auto-load
   "An explicit :ca-file is honored regardless of verify mode."
-  (let ((ctx (pure-tls:make-tls-context
-              :verify-mode pure-tls:+verify-peer+
+  (let ((ctx (boomer:make-tls-context
+              :verify-mode boomer:+verify-peer+
               :ca-file (namestring (test-cert-path "self-signed-valid.pem")))))
     (is (plusp (context-root-count ctx)))))

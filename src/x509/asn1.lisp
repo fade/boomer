@@ -7,7 +7,7 @@
 ;;; Implements ASN.1 DER (Distinguished Encoding Rules) parsing
 ;;; for X.509 certificate processing.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; ASN.1 Tag Classes and Types
 

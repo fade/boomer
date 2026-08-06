@@ -4,7 +4,7 @@
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
-;;; Provides cl+ssl-compatible API wrapping pure-tls.
+;;; Provides cl+ssl-compatible API wrapping boomer.
 
 (in-package #:cl+ssl)
 
@@ -78,16 +78,16 @@
                           private-key-file
                           private-key-password
                           private-key-file-type)
-  "Create a new SSL context (wraps pure-tls:make-tls-context)."
+  "Create a new SSL context (wraps boomer:make-tls-context)."
   (declare (ignore method disabled-protocols options min-proto-version
                    session-cache-mode verify-callback cipher-list
                    pem-password-callback private-key-password
                    private-key-file-type))
   (let* ((tls-verify-mode (cond
-                            ((zerop verify-mode) pure-tls:+verify-none+)
+                            ((zerop verify-mode) boomer:+verify-none+)
                             ((logtest verify-mode +ssl-verify-fail-if-no-peer-cert+)
-                             pure-tls:+verify-required+)
-                            (t pure-tls:+verify-peer+)))
+                             boomer:+verify-required+)
+                            (t boomer:+verify-peer+)))
          (verify-location-list (and (listp verify-location) verify-location))
          (dir-path-p (lambda (p)
                        (let ((pp (ignore-errors (probe-file p))))
@@ -116,7 +116,7 @@
                                     (and (stringp item)
                                          (funcall dir-path-p item))))
                               verify-location-list))))
-    (pure-tls:make-tls-context
+    (boomer:make-tls-context
      :verify-mode tls-verify-mode
      :verify-depth verify-depth
      :certificate-chain-file certificate-chain-file
@@ -126,7 +126,7 @@
 
 (defun ssl-ctx-free (context)
   "Free an SSL context."
-  (pure-tls:tls-context-free context))
+  (boomer:tls-context-free context))
 
 (defun call-with-global-context (ssl-ctx auto-free-p body-fn)
   "Call BODY-FN with *SSL-GLOBAL-CONTEXT* bound to SSL-CTX.
@@ -173,22 +173,22 @@ wrap it in a stream. Otherwise return it as-is."
                                         (buffer-size *default-buffer-size*)
                                         (input-buffer-size buffer-size)
                                         (output-buffer-size buffer-size))
-  "Create an SSL client stream (wraps pure-tls:make-tls-client-stream)."
+  "Create an SSL client stream (wraps boomer:make-tls-client-stream)."
   (declare (ignore unwrap-stream-p certificate key password cipher-list method
                    input-buffer-size output-buffer-size))
   (let ((tls-verify-mode (cond
-                           ((null verify) pure-tls:+verify-none+)
-                           ((eql verify :optional) pure-tls:+verify-peer+)
-                           ((eql verify :required) pure-tls:+verify-required+)
-                           (t pure-tls:+verify-required+)))
+                           ((null verify) boomer:+verify-none+)
+                           ((eql verify :optional) boomer:+verify-peer+)
+                           ((eql verify :required) boomer:+verify-required+)
+                           (t boomer:+verify-required+)))
         (actual-stream (%ensure-stream socket))
-        ;; Wrap close-callback: cl+ssl callbacks take no args, pure-tls passes the stream
+        ;; Wrap close-callback: cl+ssl callbacks take no args, boomer passes the stream
         (wrapped-callback (when close-callback
                             (lambda (stream)
                               (declare (ignore stream))
                               (funcall close-callback)))))
     (ensure-initialized)
-    (pure-tls:make-tls-client-stream
+    (boomer:make-tls-client-stream
      actual-stream
      :context *ssl-global-context*
      :hostname hostname
@@ -211,7 +211,7 @@ wrap it in a stream. Otherwise return it as-is."
                                          (buffer-size *default-buffer-size*)
                                          (input-buffer-size buffer-size)
                                          (output-buffer-size buffer-size))
-  "Create an SSL server stream (wraps pure-tls:make-tls-server-stream).
+  "Create an SSL server stream (wraps boomer:make-tls-server-stream).
 
    VERIFY controls client certificate requirements:
      NIL      - No client certificate requested (+verify-none+)
@@ -220,17 +220,17 @@ wrap it in a stream. Otherwise return it as-is."
   (declare (ignore unwrap-stream-p password cipher-list method
                    input-buffer-size output-buffer-size))
   (let ((tls-verify-mode (cond
-                           ((null verify) pure-tls:+verify-none+)
-                           ((eql verify :optional) pure-tls:+verify-peer+)
-                           ((eql verify :required) pure-tls:+verify-required+)
-                           (t pure-tls:+verify-none+)))
-        ;; Wrap close-callback: cl+ssl callbacks take no args, pure-tls passes the stream
+                           ((null verify) boomer:+verify-none+)
+                           ((eql verify :optional) boomer:+verify-peer+)
+                           ((eql verify :required) boomer:+verify-required+)
+                           (t boomer:+verify-none+)))
+        ;; Wrap close-callback: cl+ssl callbacks take no args, boomer passes the stream
         (wrapped-callback (when close-callback
                             (lambda (stream)
                               (declare (ignore stream))
                               (funcall close-callback)))))
     (ensure-initialized)
-    (pure-tls:make-tls-server-stream
+    (boomer:make-tls-server-stream
      socket
      :context *ssl-global-context*
      :certificate certificate
@@ -246,23 +246,23 @@ wrap it in a stream. Otherwise return it as-is."
 
 (defun ssl-stream-x509-certificate (ssl-stream)
   "Get the peer's X.509 certificate."
-  (pure-tls:tls-peer-certificate ssl-stream))
+  (boomer:tls-peer-certificate ssl-stream))
 
 (defun get-selected-alpn-protocol (ssl-stream)
   "Get the selected ALPN protocol."
-  (pure-tls:tls-selected-alpn ssl-stream))
+  (boomer:tls-selected-alpn ssl-stream))
 
 (defgeneric stream-fd (stream)
   (:documentation "Get the file descriptor for a stream.
-For pure-tls compatibility, we return the stream itself rather than
-extracting the fd, since pure-tls works with streams not file descriptors.
+For boomer compatibility, we return the stream itself rather than
+extracting the fd, since boomer works with streams not file descriptors.
 This avoids the dual-buffering problem that occurs when creating a new
 stream from an extracted fd.")
   ;; Return stream as-is - make-ssl-client-stream will handle it via %ensure-stream
   (:method (stream) stream))
 
 ;; Note: We intentionally don't define a method for sb-sys:fd-stream that
-;; extracts the fd, because our pure-tls-based make-ssl-client-stream
+;; extracts the fd, because our boomer-based make-ssl-client-stream
 ;; works better with the original stream than with a new stream created
 ;; from the extracted fd.
 
@@ -271,12 +271,12 @@ stream from an extracted fd.")
 (defun decode-certificate (format bytes)
   "Decode a certificate from bytes."
   (declare (ignore format))
-  (pure-tls::parse-certificate bytes))
+  (boomer::parse-certificate bytes))
 
 (defun decode-certificate-from-file (path &key format)
   "Load and decode a certificate from a file."
   (declare (ignore format))
-  (pure-tls::parse-certificate-from-file path))
+  (boomer::parse-certificate-from-file path))
 
 (defun x509-free (cert)
   "Free an X.509 certificate (no-op in pure Lisp)."
@@ -285,29 +285,29 @@ stream from an extracted fd.")
 
 (defun certificate-not-after-time (cert)
   "Get the notAfter time of a certificate."
-  (pure-tls:certificate-not-after cert))
+  (boomer:certificate-not-after cert))
 
 (defun certificate-not-before-time (cert)
   "Get the notBefore time of a certificate."
-  (pure-tls:certificate-not-before cert))
+  (boomer:certificate-not-before cert))
 
 (defun certificate-subject-common-names (cert)
   "Get the subject common names of a certificate."
-  (pure-tls:certificate-subject-common-names cert))
+  (boomer:certificate-subject-common-names cert))
 
 (defun certificate-fingerprint (cert &optional (algorithm :sha1))
   "Get the fingerprint of a certificate."
-  (pure-tls:certificate-fingerprint cert algorithm))
+  (boomer:certificate-fingerprint cert algorithm))
 
 (defun verify-hostname (cert hostname)
   "Verify that a certificate matches a hostname."
-  (pure-tls:verify-hostname cert hostname))
+  (boomer:verify-hostname cert hostname))
 
 ;;;; Utility Functions
 
 (defun random-bytes (count)
   "Generate random bytes."
-  (pure-tls:random-bytes count))
+  (boomer:random-bytes count))
 
 (defun use-certificate-chain-file (path)
   "Load a certificate chain file into the global context."

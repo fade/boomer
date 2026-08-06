@@ -11,7 +11,7 @@
 ;;; - FIPS 203: Module-Lattice-Based Key-Encapsulation Mechanism Standard
 ;;; - RFC TBD: Hybrid Key Exchange in TLS 1.3
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; =========================================================================
 ;;;; ML-KEM-768 Parameters (FIPS 203, Table 2)

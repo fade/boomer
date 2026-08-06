@@ -1,4 +1,4 @@
-# Makefile for pure-tls
+# Makefile for boomer
 #
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Anthony Green <green@moxielogic.com>
@@ -19,7 +19,7 @@ SETUP := 1
 all: help
 
 help:
-	@echo "pure-tls Makefile targets:"
+	@echo "boomer Makefile targets:"
 	@echo "  test            - Run all tests (default)"
 	@echo "  check           - Alias for test"
 	@echo "  all-tests       - Run all tests (unit, network, verify, connect, boringssl)"
@@ -29,7 +29,7 @@ help:
 	@echo "  boringssl-tests - Run BoringSSL TLS 1.3 test suite"
 	@echo "  save-test-baseline - Save current BoringSSL test results as baseline"
 	@echo "  check-regressions  - Run BoringSSL tests and check for regressions"
-	@echo "  load            - Load pure-tls and verify compilation"
+	@echo "  load            - Load boomer and verify compilation"
 	@echo "  connect         - Run connection test against example.com"
 	@echo "  verify          - Run certificate verification tests"
 	@echo "  clean           - Remove compiled files"
@@ -42,26 +42,26 @@ check: all-tests
 all-tests: unit-tests network-tests verify connect boringssl-tests
 
 unit-tests:
-	@echo "=== Running pure-tls Unit Tests ==="
+	@echo "=== Running boomer Unit Tests ==="
 	$(SBCL) --eval '$(SETUP)' \
-	        --eval '(asdf:load-system :pure-tls/test)' \
-	        --eval '(if (pure-tls/test:run-tests) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
+	        --eval '(asdf:load-system :boomer/test)' \
+	        --eval '(if (boomer/test:run-tests) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
 
 # Run network tests (requires internet connectivity)
 network-tests:
-	@echo "=== Running pure-tls Network Tests ==="
+	@echo "=== Running boomer Network Tests ==="
 	$(SBCL) --eval '$(SETUP)' \
-	        --eval '(asdf:load-system :pure-tls/test)' \
-	        --eval '(if (pure-tls/test:run-network-tests) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
+	        --eval '(asdf:load-system :boomer/test)' \
+	        --eval '(if (boomer/test:run-network-tests) (sb-ext:exit :code 0) (sb-ext:exit :code 1))'
 
 # Load test - verify everything compiles
 load:
-	@echo "=== Loading pure-tls ==="
+	@echo "=== Loading boomer ==="
 	$(SBCL) --eval '$(SETUP)' \
-	        --eval '(asdf:load-system :pure-tls)' \
-	        --eval '(format t "~%pure-tls loaded successfully!~%")' \
-	        --eval '(asdf:load-system :pure-tls/test)' \
-	        --eval '(format t "pure-tls/test loaded successfully!~%")' \
+	        --eval '(asdf:load-system :boomer)' \
+	        --eval '(format t "~%boomer loaded successfully!~%")' \
+	        --eval '(asdf:load-system :boomer/test)' \
+	        --eval '(format t "boomer/test loaded successfully!~%")' \
 	        --eval '(sb-ext:exit :code 0)'
 
 # Integration test - connect to example.com
@@ -80,11 +80,11 @@ boringssl-shim: pure-tls-shim
 pure-tls-shim:
 	@echo "=== Building BoringSSL Test Shim ==="
 	$(SBCL) --eval '$(SETUP)' \
-	        --eval '(asdf:load-system :pure-tls)' \
+	        --eval '(asdf:load-system :boomer)' \
 	        --eval '(require :usocket)' \
 	        --eval '(require :babel)' \
 	        --load test/boringssl-shim.lisp \
-	        --eval '(pure-tls/boringssl-shim:build-shim)'
+	        --eval '(boomer/boringssl-shim:build-shim)'
 
 # Run BoringSSL TLS 1.3 tests
 boringssl-tests: pure-tls-shim

@@ -5,11 +5,11 @@
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
 ;;; Minimal CFFI bindings to Windows CryptoAPI for certificate chain
-;;; verification using the system certificate store. This allows pure-tls
+;;; verification using the system certificate store. This allows boomer
 ;;; to validate certificates against Windows trusted roots without bundling
 ;;; CA certificates.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 #+windows
 (progn

@@ -1,6 +1,6 @@
 # ACME Integration Testing with Pebble
 
-This directory contains tools for testing the pure-tls/acme system against
+This directory contains tools for testing the boomer/acme system against
 [Pebble](https://github.com/letsencrypt/pebble), Let's Encrypt's test ACME server.
 
 ## Prerequisites
@@ -72,8 +72,8 @@ The test uses these defaults (configurable in the test file):
 From a REPL, you can run parts of the test:
 
 ```lisp
-(ql:quickload :pure-tls/acme)
-(in-package :pure-tls/acme)
+(ql:quickload :boomer/acme)
+(in-package :boomer/acme)
 
 ;; Configure for Pebble
 (setf *skip-tls-verify* t)

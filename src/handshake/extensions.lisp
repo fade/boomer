@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS 1.3 extension parsing and serialization.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Extension Structure
 ;;;
@@ -356,7 +356,7 @@
        opaque DistinguishedName<1..2^16-1>;
        struct { DistinguishedName authorities<3..2^16-1>; }
 
-   pure-tls does not act on the CA list, but it MUST still validate the
+   boomer does not act on the CA list, but it MUST still validate the
    structure: reject an empty list and reject trailing data after it.
    Returns the raw DER bytes (unchanged) on success.  Any structural failure
    is reported as an extension parse error (decode_error alert)."

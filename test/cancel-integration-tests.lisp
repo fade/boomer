@@ -7,7 +7,7 @@
 ;;; Integration tests that verify timeout and cancellation behavior during
 ;;; real TLS operations (handshake, I/O, CRL fetching) using cl-cancel.
 
-(in-package :pure-tls/test)
+(in-package :boomer/test)
 
 (def-suite cancel-integration-tests
     :description "Integration tests for cl-cancel timeout/cancellation")
@@ -35,10 +35,10 @@
                   ;; Should fail because server never responds
                   (signals error  ; Will be one of our timeout/cancellation conditions or TLS error
                     (cl-cancel:with-timeout-context (_ 1)
-                      (pure-tls:make-tls-client-stream
+                      (boomer:make-tls-client-stream
                        (usocket:socket-stream client-socket)
                        :hostname "localhost"
-                       :verify pure-tls:+verify-none+))))
+                       :verify boomer:+verify-none+))))
              (ignore-errors (usocket:socket-close client-socket))))
       (ignore-errors (usocket:socket-close server-socket)))))
 
@@ -53,8 +53,8 @@
     (funcall cancel-fn)
 
     ;; Any TLS operation with this context should fail immediately
-    (signals pure-tls:tls-context-cancelled
-      (pure-tls::check-tls-context cancel-ctx))))
+    (signals boomer:tls-context-cancelled
+      (boomer::check-tls-context cancel-ctx))))
 
 (test timeout-with-slow-http-server
   "Test CRL fetch timeout with a slow HTTP server"
@@ -88,7 +88,7 @@
              (sleep 0.2)  ; Give server thread time to start accepting
              (handler-case
                  (cl-cancel:with-timeout-context (_ 2)
-                   (pure-tls::fetch-crl url)
+                   (boomer::fetch-crl url)
                    ;; If we got here without error, fail the test
                    (fail "Expected timeout error but fetch succeeded"))
                (error (e)
@@ -107,13 +107,13 @@
         (let* ((socket (usocket:socket-connect "github.com" 443
                                                 :element-type '(unsigned-byte 8)
                                                 :timeout 10))
-               (stream (pure-tls:make-tls-client-stream
+               (stream (boomer:make-tls-client-stream
                         (usocket:socket-stream socket)
                         :hostname "github.com")))
           (unwind-protect
                (progn
                  ;; Verify stream is usable
-                 (is (typep stream 'pure-tls:tls-stream))
+                 (is (typep stream 'boomer:tls-stream))
                  ;; Try a simple read (should not timeout)
                  (write-sequence
                   (flexi-streams:string-to-octets

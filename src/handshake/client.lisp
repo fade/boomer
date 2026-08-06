@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements the TLS 1.3 client handshake state machine.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Client Handshake State
 

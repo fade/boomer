@@ -1,4 +1,4 @@
-;;; test/package.lisp --- Test package for pure-tls
+;;; test/package.lisp --- Test package for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -6,7 +6,7 @@
 
 (in-package #:cl-user)
 
-(defpackage #:pure-tls/test
+(defpackage #:boomer/test
   (:use #:cl #:fiveam)
   (:export
    #:run-tests

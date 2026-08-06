@@ -1,15 +1,15 @@
-;;; test/runner.lisp --- Test runner functions for pure-tls
+;;; test/runner.lisp --- Test runner functions for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (defun run-tests ()
-  "Run all pure-tls test suites (excluding network-dependent tests).
+  "Run all boomer test suites (excluding network-dependent tests).
    Returns T if all tests pass, NIL otherwise."
-  (format t "~&=== Running pure-tls Test Suite ===~%~%")
+  (format t "~&=== Running boomer Test Suite ===~%~%")
   (format t "--- Crypto Tests ---~%")
   (let ((crypto-ok (run! 'crypto-tests)))
     (format t "~%--- ML-DSA Tests ---~%")

@@ -6,7 +6,7 @@
 ;;;
 ;;; Tests for X.509 certificate parsing and validation.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (def-suite certificate-tests
   :description "Tests for X.509 certificate handling")
@@ -20,64 +20,64 @@
 (test asn1-parse-integer
   "Test parsing ASN.1 INTEGER"
   (let* ((data (hex-to-bytes "02 01 05"))  ; INTEGER 5
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 2)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 2)
         "Tag should be 2 (INTEGER)")
-    (is (= (pure-tls::asn1-node-value node) 5)
+    (is (= (boomer::asn1-node-value node) 5)
         "Value should be 5")))
 
 (test asn1-parse-sequence
   "Test parsing ASN.1 SEQUENCE"
   (let* ((data (hex-to-bytes "30 06 02 01 01 02 01 02"))  ; SEQUENCE { 1, 2 }
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 16)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 16)
         "Tag should be 16 (SEQUENCE)")
-    (is (pure-tls::asn1-node-constructed node)
+    (is (boomer::asn1-node-constructed node)
         "SEQUENCE should be constructed")))
 
 (test asn1-parse-oid
   "Test parsing ASN.1 OBJECT IDENTIFIER"
   (let* ((data (hex-to-bytes "06 09 2a 86 48 86 f7 0d 01 01 0b"))  ; sha256WithRSAEncryption
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 6)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 6)
         "Tag should be 6 (OID)")
-    (is (listp (pure-tls::asn1-node-value node))
+    (is (listp (boomer::asn1-node-value node))
         "OID value should be a list")))
 
 (test asn1-parse-utf8string
   "Test parsing ASN.1 UTF8String"
   (let* ((data (hex-to-bytes "0c 05 48 65 6c 6c 6f"))  ; "Hello"
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 12)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 12)
         "Tag should be 12 (UTF8String)")
-    (is (string= (pure-tls::asn1-node-value node) "Hello")
+    (is (string= (boomer::asn1-node-value node) "Hello")
         "Value should be 'Hello'")))
 
 (test asn1-parse-printablestring
   "Test parsing ASN.1 PrintableString"
   (let* ((data (hex-to-bytes "13 05 48 65 6c 6c 6f"))  ; "Hello"
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 19)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 19)
         "Tag should be 19 (PrintableString)")
-    (is (string= (pure-tls::asn1-node-value node) "Hello")
+    (is (string= (boomer::asn1-node-value node) "Hello")
         "Value should be 'Hello'")))
 
 (test asn1-parse-utctime
   "Test parsing ASN.1 UTCTime"
   (let* ((data (hex-to-bytes "17 0d 32 35 30 31 30 31 30 30 30 30 30 30 5a"))  ; 250101000000Z
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 23)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 23)
         "Tag should be 23 (UTCTime)")
-    (is (integerp (pure-tls::asn1-node-value node))
+    (is (integerp (boomer::asn1-node-value node))
         "UTCTime value should be parsed to universal time")))
 
 (test asn1-parse-bitstring
   "Test parsing ASN.1 BIT STRING"
   (let* ((data (hex-to-bytes "03 04 06 6e 5d c0"))  ; BIT STRING
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer data))))
-    (is (= (pure-tls::asn1-node-tag node) 3)
+         (node (boomer::parse-der-node (boomer::make-tls-buffer data))))
+    (is (= (boomer::asn1-node-tag node) 3)
         "Tag should be 3 (BIT STRING)")
-    (is (listp (pure-tls::asn1-node-value node))
+    (is (listp (boomer::asn1-node-value node))
         "BIT STRING value should be a plist with :unused-bits and :bytes")))
 
 ;;;; Certificate Structure Tests
@@ -87,35 +87,35 @@
   ;; Version 3 certificates have version field [0] EXPLICIT INTEGER 2
   ;; (0-indexed, so version 3 = value 2)
   (let* ((version-data (hex-to-bytes "a0 03 02 01 02"))
-         (node (pure-tls::parse-der-node (pure-tls::make-tls-buffer version-data))))
-    (is (= (pure-tls::asn1-node-class node) 2)  ; Context-specific
+         (node (boomer::parse-der-node (boomer::make-tls-buffer version-data))))
+    (is (= (boomer::asn1-node-class node) 2)  ; Context-specific
         "Version wrapper should be context-specific")
-    (is (pure-tls::asn1-node-constructed node)
+    (is (boomer::asn1-node-constructed node)
         "Version wrapper should be constructed")))
 
 ;;;; Hostname Verification Tests
 
 (test hostname-match-exact
   "Test exact hostname matching"
-  (is (pure-tls::hostname-matches-p "example.com" "example.com")
+  (is (boomer::hostname-matches-p "example.com" "example.com")
       "Exact match should succeed")
-  (is (not (pure-tls::hostname-matches-p "other.com" "example.com"))
+  (is (not (boomer::hostname-matches-p "other.com" "example.com"))
       "Different hostnames should not match"))
 
 (test hostname-match-wildcard
   "Test wildcard hostname matching"
-  (is (pure-tls::hostname-matches-p "*.example.com" "www.example.com")
+  (is (boomer::hostname-matches-p "*.example.com" "www.example.com")
       "Wildcard should match single subdomain")
-  (is (not (pure-tls::hostname-matches-p "*.example.com" "sub.www.example.com"))
+  (is (not (boomer::hostname-matches-p "*.example.com" "sub.www.example.com"))
       "Wildcard should not match multiple subdomains")
-  (is (not (pure-tls::hostname-matches-p "*.example.com" "example.com"))
+  (is (not (boomer::hostname-matches-p "*.example.com" "example.com"))
       "Wildcard should not match apex domain"))
 
 (test hostname-match-case-insensitive
   "Test case-insensitive hostname matching"
-  (is (pure-tls::hostname-matches-p "example.com" "EXAMPLE.COM")
+  (is (boomer::hostname-matches-p "example.com" "EXAMPLE.COM")
       "Hostname matching should be case-insensitive")
-  (is (pure-tls::hostname-matches-p "*.example.COM" "www.EXAMPLE.com")
+  (is (boomer::hostname-matches-p "*.example.COM" "www.EXAMPLE.com")
       "Wildcard matching should be case-insensitive"))
 
 ;;;; Certificate Fingerprint Tests
@@ -187,7 +187,7 @@
 
 (defvar *test-certs-dir*
   (merge-pathnames "certs/"
-                   (asdf:system-relative-pathname :pure-tls/test "test/"))
+                   (asdf:system-relative-pathname :boomer/test "test/"))
   "Directory containing bundled test certificates.")
 
 (defun test-cert-path (filename)
@@ -197,76 +197,76 @@
 (test parse-expired-certificate
   "Test parsing an expired certificate"
   (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path)))
+         (cert (boomer:parse-certificate-from-file cert-path)))
     (is (not (null cert))
         "Should successfully parse expired certificate")
-    (is (< (pure-tls:certificate-not-after cert) (get-universal-time))
+    (is (< (boomer:certificate-not-after cert) (get-universal-time))
         "Certificate should be expired (notAfter in the past)")))
 
 (test parse-self-signed-certificate
   "Test parsing a self-signed certificate (valid, not expired)"
   (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path)))
+         (cert (boomer:parse-certificate-from-file cert-path)))
     (is (not (null cert))
         "Should successfully parse self-signed certificate")
     ;; Self-signed: subject CN is test.example.com
-    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+    (let ((cns (boomer:certificate-subject-common-names cert)))
       (is (member "test.example.com" cns :test #'string=)
           "Self-signed cert should have correct CN"))
     ;; Verify it's NOT expired (valid until 2036)
-    (is (> (pure-tls:certificate-not-after cert) (get-universal-time))
+    (is (> (boomer:certificate-not-after cert) (get-universal-time))
         "Self-signed test cert should still be valid")
     ;; Verify issuer == subject (self-signed property)
-    (let* ((subject-rdns (pure-tls::x509-name-rdns
-                          (pure-tls::x509-certificate-subject cert)))
-           (issuer-rdns (pure-tls::x509-name-rdns
-                         (pure-tls::x509-certificate-issuer cert))))
+    (let* ((subject-rdns (boomer::x509-name-rdns
+                          (boomer::x509-certificate-subject cert)))
+           (issuer-rdns (boomer::x509-name-rdns
+                         (boomer::x509-certificate-issuer cert))))
       (is (equal subject-rdns issuer-rdns)
           "Self-signed: issuer should equal subject"))))
 
 (test self-signed-rejected-by-chain-verification
   "Test that self-signed certificates are rejected during chain verification"
   ;; Disable native verification to test pure-Lisp path explicitly
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil))
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil))
     (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
-           (cert (pure-tls:parse-certificate-from-file cert-path))
+           (cert (boomer:parse-certificate-from-file cert-path))
            (empty-roots nil))
       ;; Self-signed cert should be rejected when not in trusted roots
-      (signals pure-tls:tls-verification-error
-        (pure-tls::verify-certificate-chain (list cert) empty-roots))
+      (signals boomer:tls-verification-error
+        (boomer::verify-certificate-chain (list cert) empty-roots))
       ;; But should pass if we add it to trusted roots
-      (is (pure-tls::verify-certificate-chain (list cert) (list cert))
+      (is (boomer::verify-certificate-chain (list cert) (list cert))
           "Self-signed cert should pass if explicitly trusted"))))
 
 (test parse-superfish-ca
   "Test parsing the Superfish malware CA certificate"
   (let* ((cert-path (test-cert-path "ca-superfish.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path)))
+         (cert (boomer:parse-certificate-from-file cert-path)))
     (is (not (null cert))
         "Should successfully parse Superfish CA")
     ;; Verify it's the known bad CA by checking subject CN
-    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+    (let ((cns (boomer:certificate-subject-common-names cert)))
       (is (member "Superfish, Inc." cns :test #'string=)
           "Should identify Superfish CA by CN"))))
 
 (test parse-edellroot-ca
   "Test parsing the eDellRoot malware CA certificate"
   (let* ((cert-path (test-cert-path "ca-edellroot.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path)))
+         (cert (boomer:parse-certificate-from-file cert-path)))
     (is (not (null cert))
         "Should successfully parse eDellRoot CA")
     ;; Verify it's the known bad CA
-    (let ((cns (pure-tls:certificate-subject-common-names cert)))
+    (let ((cns (boomer:certificate-subject-common-names cert)))
       (is (member "eDellRoot" cns :test #'string=)
           "Should identify eDellRoot CA by CN"))))
 
 (test expired-certificate-detected
   "Test that expired certificates are properly detected"
   (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (not-after (pure-tls:certificate-not-after cert))
-         (not-before (pure-tls:certificate-not-before cert)))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (not-after (boomer:certificate-not-after cert))
+         (not-before (boomer:certificate-not-before cert)))
     ;; Verify the certificate dates
     (is (< not-before not-after)
         "notBefore should be before notAfter")
@@ -288,37 +288,37 @@
 (test windows-native-rejects-expired
   "Test that Windows CryptoAPI rejects expired certificates"
   (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-windows der-list "expired.badssl.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-windows der-list "expired.badssl.com"))))
 
 #+windows
 (test windows-native-rejects-self-signed
   "Test that Windows CryptoAPI rejects self-signed certificates"
   (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-windows der-list "test.example.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-windows der-list "test.example.com"))))
 
 #+windows
 (test windows-native-rejects-superfish
   "Test that Windows CryptoAPI rejects Superfish malware CA"
   (let* ((cert-path (test-cert-path "ca-superfish.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-windows der-list "superfish.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-windows der-list "superfish.com"))))
 
 #+windows
 (test windows-native-rejects-edellroot
   "Test that Windows CryptoAPI rejects eDellRoot malware CA"
   (let* ((cert-path (test-cert-path "ca-edellroot.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-windows der-list "dell.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-windows der-list "dell.com"))))
 
 ;;;; macOS Native Verification Tests (offline)
 ;;;; These test the Security.framework path with bundled bad certificates
@@ -327,37 +327,37 @@
 (test macos-native-rejects-expired
   "Test that macOS Security.framework rejects expired certificates"
   (let* ((cert-path (test-cert-path "wildcard-expired.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-macos der-list "expired.badssl.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-macos der-list "expired.badssl.com"))))
 
 #+(or darwin macos)
 (test macos-native-rejects-self-signed
   "Test that macOS Security.framework rejects self-signed certificates"
   (let* ((cert-path (test-cert-path "self-signed-valid.pem"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-macos der-list "test.example.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-macos der-list "test.example.com"))))
 
 #+(or darwin macos)
 (test macos-native-rejects-superfish
   "Test that macOS Security.framework rejects Superfish malware CA"
   (let* ((cert-path (test-cert-path "ca-superfish.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-macos der-list "superfish.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-macos der-list "superfish.com"))))
 
 #+(or darwin macos)
 (test macos-native-rejects-edellroot
   "Test that macOS Security.framework rejects eDellRoot malware CA"
   (let* ((cert-path (test-cert-path "ca-edellroot.crt"))
-         (cert (pure-tls:parse-certificate-from-file cert-path))
-         (der-list (list (pure-tls::x509-certificate-raw-der cert))))
-    (signals pure-tls:tls-certificate-error
-      (pure-tls::verify-certificate-chain-macos der-list "dell.com"))))
+         (cert (boomer:parse-certificate-from-file cert-path))
+         (der-list (list (boomer::x509-certificate-raw-der cert))))
+    (signals boomer:tls-certificate-error
+      (boomer::verify-certificate-chain-macos der-list "dell.com"))))
 
 ;;;; CRL Tests
 
@@ -368,14 +368,14 @@
          (tls nil))
     (unwind-protect
         (progn
-          (setf tls (pure-tls:make-tls-client-stream
+          (setf tls (boomer:make-tls-client-stream
                      (usocket:socket-stream socket)
                      :sni-hostname "google.com"
-                     :verify pure-tls:+verify-none+))
-          (let* ((hs (pure-tls::tls-stream-handshake tls))
-                 (chain (pure-tls::client-handshake-peer-certificate-chain hs))
+                     :verify boomer:+verify-none+))
+          (let* ((hs (boomer::tls-stream-handshake tls))
+                 (chain (boomer::client-handshake-peer-certificate-chain hs))
                  (cert (first chain))
-                 (cdp (pure-tls::certificate-crl-distribution-points cert)))
+                 (cdp (boomer::certificate-crl-distribution-points cert)))
             (is (not (null cdp)) "Google certificate should have CRL Distribution Points")
             (is (every (lambda (uri) (stringp uri)) cdp)
                 "CDP URIs should be strings")
@@ -391,23 +391,23 @@
 A tls-alpn-01 challenge certificate carries the key-authorization digest in a
 critical extension at OID 1.3.6.1.5.5.7.1.31, so the parser must recognize it
 as :acme-identifier rather than rejecting it as an unknown critical extension.
-The fixture is genuine output of pure-tls's own ACME challenge-certificate path,
+The fixture is genuine output of boomer's own ACME challenge-certificate path,
 and that provenance is why it is kept verbatim rather than regenerated.  Only
 the parse is exercised here; no validity date is ever evaluated, so the
 fixture's notAfter is immaterial and it needs no reissuing once it lapses."
   (let* ((cert-path (test-cert-path "acme-tls-alpn-challenge.pem"))
          ;; Must not signal an unknown-critical tls-decode-error.
-         (cert (pure-tls:parse-certificate-from-file cert-path))
+         (cert (boomer:parse-certificate-from-file cert-path))
          (ext (find :acme-identifier
-                    (pure-tls::x509-certificate-extensions cert)
-                    :key #'pure-tls::x509-extension-oid)))
+                    (boomer::x509-certificate-extensions cert)
+                    :key #'boomer::x509-extension-oid)))
     (is (not (null ext))
         "Certificate should carry an acmeIdentifier extension")
-    (is (eq :acme-identifier (pure-tls::x509-extension-oid ext))
+    (is (eq :acme-identifier (boomer::x509-extension-oid ext))
         "acmeIdentifier OID should resolve to the :acme-identifier keyword")
-    (is (pure-tls::x509-extension-critical ext)
+    (is (boomer::x509-extension-critical ext)
         "acmeIdentifier extension should be marked critical")
-    (is (null (pure-tls::certificate-has-unknown-critical-extensions-p cert))
+    (is (null (boomer::certificate-has-unknown-critical-extensions-p cert))
         "A recognized acmeIdentifier should not count as an unknown critical extension")))
 
 (test unknown-critical-extension-still-rejected
@@ -417,8 +417,8 @@ critical extension at an unrelated, unrecognized OID must still fail to parse,
 proving the allowance is scoped to the single acmeIdentifier OID.  The fixture
 is a self-signed certificate carrying one critical extension at 1.3.6.1.4.1.99999.1."
   (let ((cert-path (test-cert-path "unknown-critical-extension.pem")))
-    (signals pure-tls:tls-decode-error
-      (pure-tls:parse-certificate-from-file cert-path))))
+    (signals boomer:tls-decode-error
+      (boomer:parse-certificate-from-file cert-path))))
 
 (defun run-certificate-tests ()
   "Run all certificate tests."

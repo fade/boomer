@@ -1,16 +1,16 @@
-;;; buffer-pool.lisp --- Buffer pooling and allocation context for pure-tls
+;;; buffer-pool.lisp --- Buffer pooling and allocation context for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 John C. Mallery <jcma@csail.mit.edu>
 ;;;
-;;; Reduces per-record allocation in pure-tls by pooling TLS record
+;;; Reduces per-record allocation in boomer by pooling TLS record
 ;;; buffers and providing a scoped allocation context that automatically
 ;;; returns buffers to the pool on scope exit.
 ;;;
-;;; Uses bordeaux-threads for portability (already a pure-tls dependency).
+;;; Uses bordeaux-threads for portability (already a boomer dependency).
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Buffer Pool
 ;;;

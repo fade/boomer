@@ -6,7 +6,7 @@
 ;;;
 ;;; Thread-safe ACME client with encapsulated state.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; ACME Client Structure

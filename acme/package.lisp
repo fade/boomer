@@ -1,4 +1,4 @@
-;;; package.lisp --- Package definition for pure-tls/acme
+;;; package.lisp --- Package definition for boomer/acme
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -8,7 +8,7 @@
 
 (in-package #:cl-user)
 
-(defpackage #:pure-tls/acme
+(defpackage #:boomer/acme
   (:use #:cl)
   (:nicknames #:acme)
   (:export

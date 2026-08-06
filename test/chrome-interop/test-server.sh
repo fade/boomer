@@ -6,7 +6,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-echo "Starting pure-tls server..."
+echo "Starting boomer server..."
 sbcl --noinform --non-interactive --load chrome-server.lisp > /tmp/server.log 2>&1 &
 SERVER_PID=$!
 

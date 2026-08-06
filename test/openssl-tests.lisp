@@ -1,14 +1,14 @@
-;;; openssl-tests.lisp --- OpenSSL test suite adaptation for pure-tls
+;;; openssl-tests.lisp --- OpenSSL test suite adaptation for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 ;;;
 ;;; This file implements a framework for running OpenSSL's ssl-tests
-;;; against pure-tls. It parses the .cnf test configuration files and
-;;; executes the tests using pure-tls client/server.
+;;; against boomer. It parses the .cnf test configuration files and
+;;; executes the tests using boomer client/server.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 ;;;; INI File Parser using iparse
 ;;;
@@ -141,7 +141,7 @@
   (expected-server-alert nil :type (or null string)))
 
 (defparameter *openssl-certs-dir*
-  (namestring (merge-pathnames "test/certs/openssl/" (asdf:system-source-directory :pure-tls)))
+  (namestring (merge-pathnames "test/certs/openssl/" (asdf:system-source-directory :boomer)))
   "Directory containing OpenSSL test certificates.")
 
 (defun resolve-cert-path (path-template)
@@ -247,13 +247,13 @@
          :expected-client-alert (get-value result-section "ExpectedClientAlert")
          :expected-server-alert (get-value result-section "ExpectedServerAlert"))))))
 
-;; Curves supported by pure-tls
+;; Curves supported by boomer
 (defparameter *supported-curves*
   '("X25519" "P-256" "secp256r1" "prime256v1")
-  "List of elliptic curves supported by pure-tls.")
+  "List of elliptic curves supported by boomer.")
 
 (defun curve-supported-p (curve-name)
-  "Check if a curve is supported by pure-tls."
+  "Check if a curve is supported by boomer."
   (member curve-name *supported-curves* :test #'string-equal))
 
 (defun uses-unsupported-curve-p (server-section client-section)
@@ -403,11 +403,11 @@
       (seclevel-in-cipher
        "Requires security levels (not implemented)")
       ((and expected-protocol (not (string-equal expected-protocol "TLSv1.3")))
-       (format nil "Expects ~A (pure-tls is TLS 1.3 only)" expected-protocol))
+       (format nil "Expects ~A (boomer is TLS 1.3 only)" expected-protocol))
       ((and server-max (not (string= server-max "TLSv1.3")))
-       (format nil "Requires ~A (pure-tls is TLS 1.3 only)" server-max))
+       (format nil "Requires ~A (boomer is TLS 1.3 only)" server-max))
       ((and client-max (not (string= client-max "TLSv1.3")))
-       (format nil "Requires ~A (pure-tls is TLS 1.3 only)" client-max))
+       (format nil "Requires ~A (boomer is TLS 1.3 only)" client-max))
       ((and server-min server-max (not (string= server-min server-max)))
        "Requires protocol version negotiation")
       ((and client-min client-max (not (string= client-min client-max)))
@@ -439,17 +439,17 @@
   "Allocate a unique port for testing."
   (incf *test-port-counter*))
 
-(defun openssl-verify-mode-to-pure-tls (mode-string)
-  "Convert OpenSSL VerifyMode string to pure-tls constant."
+(defun openssl-verify-mode-to-boomer (mode-string)
+  "Convert OpenSSL VerifyMode string to boomer constant."
   (cond
-    ((null mode-string) pure-tls:+verify-none+)
-    ((string-equal mode-string "None") pure-tls:+verify-none+)
-    ((string-equal mode-string "Peer") pure-tls:+verify-peer+)
-    ((string-equal mode-string "Request") pure-tls:+verify-peer+)
-    ((string-equal mode-string "Require") pure-tls:+verify-required+)
-    ((string-equal mode-string "RequestPostHandshake") pure-tls:+verify-peer+)
-    ((string-equal mode-string "RequirePostHandshake") pure-tls:+verify-required+)
-    (t pure-tls:+verify-none+)))
+    ((null mode-string) boomer:+verify-none+)
+    ((string-equal mode-string "None") boomer:+verify-none+)
+    ((string-equal mode-string "Peer") boomer:+verify-peer+)
+    ((string-equal mode-string "Request") boomer:+verify-peer+)
+    ((string-equal mode-string "Require") boomer:+verify-required+)
+    ((string-equal mode-string "RequestPostHandshake") boomer:+verify-peer+)
+    ((string-equal mode-string "RequirePostHandshake") boomer:+verify-required+)
+    (t boomer:+verify-none+)))
 
 (defun run-tls-server (port cert-file key-file verify-mode ca-file alpn-protocols
                        sni-callback result-box error-box ready-lock ready-cv ready-flag)
@@ -478,12 +478,12 @@
               ;;   nil - not configured (server ignores ALPN)
               ;;   (:none) - explicitly empty (server rejects any client ALPN)
               ;;   list of strings - supported protocols
-              (let* ((context (pure-tls:make-tls-context
+              (let* ((context (boomer:make-tls-context
                                :verify-mode verify-mode
                                :ca-file ca-file
                                :alpn-protocols alpn-protocols
                                :auto-load-system-ca nil))
-                     (tls-stream (pure-tls:make-tls-server-stream
+                     (tls-stream (boomer:make-tls-server-stream
                                   (usocket:socket-stream client-socket)
                                   :certificate cert-file
                                   :key key-file
@@ -494,13 +494,13 @@
                 ;; Handshake succeeded
                 (close tls-stream)
                 (setf (car result-box) :success)))
-          (pure-tls:tls-alert-error (e)
+          (boomer:tls-alert-error (e)
             (setf (car result-box) :alert)
-            (setf (car error-box) (pure-tls::tls-alert-error-description e)))
-          (pure-tls:tls-certificate-error (e)
+            (setf (car error-box) (boomer::tls-alert-error-description e)))
+          (boomer:tls-certificate-error (e)
             (setf (car result-box) :cert-error)
             (setf (car error-box) (princ-to-string e)))
-          (pure-tls:tls-error (e)
+          (boomer:tls-error (e)
             (setf (car result-box) :tls-error)
             (setf (car error-box) (princ-to-string e)))
           (error (e)
@@ -525,7 +525,7 @@
               (let* ((alpn-list (when (and alpn-protocols
                                            (not (equal alpn-protocols '(:none))))
                                   alpn-protocols))
-                     (context (pure-tls:make-tls-context
+                     (context (boomer:make-tls-context
                                :verify-mode verify-mode
                                :ca-file ca-file
                                :alpn-protocols alpn-list
@@ -534,7 +534,7 @@
                      ;; The tests send arbitrary hostnames that don't match cert CN/SAN
                      (tls-stream (if cert-file
                                      ;; Client with certificate (mTLS)
-                                     (pure-tls:make-tls-client-stream
+                                     (boomer:make-tls-client-stream
                                       (usocket:socket-stream socket)
                                       :sni-hostname server-name  ; SNI only, no verification
                                       :verify verify-mode
@@ -543,7 +543,7 @@
                                       :client-key key-file
                                       :alpn-protocols alpn-list)
                                      ;; Client without certificate
-                                     (pure-tls:make-tls-client-stream
+                                     (boomer:make-tls-client-stream
                                       (usocket:socket-stream socket)
                                       :sni-hostname server-name  ; SNI only, no verification
                                       :verify verify-mode
@@ -551,11 +551,11 @@
                                       :alpn-protocols alpn-list))))
                 (close tls-stream)
                 (values :success nil)))
-          (pure-tls:tls-alert-error (e)
-            (values :alert (pure-tls::tls-alert-error-description e)))
-          (pure-tls:tls-certificate-error (e)
+          (boomer:tls-alert-error (e)
+            (values :alert (boomer::tls-alert-error-description e)))
+          (boomer:tls-certificate-error (e)
             (values :cert-error (princ-to-string e)))
-          (pure-tls:tls-error (e)
+          (boomer:tls-error (e)
             (values :tls-error (princ-to-string e)))
           (usocket:connection-refused-error ()
             (values :connection-refused nil))
@@ -598,7 +598,7 @@
          ;; Server config
          (server-cert (openssl-test-server-certificate test))
          (server-key (openssl-test-server-private-key test))
-         (server-verify (openssl-verify-mode-to-pure-tls
+         (server-verify (openssl-verify-mode-to-boomer
                          (openssl-test-server-verify-mode test)))
          (server-ca (openssl-test-server-verify-ca-file test))
          (server-alpn (openssl-test-server-alpn-protocols test))
@@ -607,7 +607,7 @@
          ;; Client config
          (client-cert (openssl-test-client-certificate test))
          (client-key (openssl-test-client-private-key test))
-         (client-verify (openssl-verify-mode-to-pure-tls
+         (client-verify (openssl-verify-mode-to-boomer
                          (openssl-test-client-verify-mode test)))
          (client-ca (openssl-test-client-verify-ca-file test))
          (client-alpn (openssl-test-client-alpn-protocols test))
@@ -721,7 +721,7 @@ ExpectedResult = Success
 
 ;;; Test loading actual OpenSSL config files
 (defparameter *openssl-ssl-tests-dir*
-  (merge-pathnames "test/ssl-tests/" (asdf:system-source-directory :pure-tls))
+  (merge-pathnames "test/ssl-tests/" (asdf:system-source-directory :boomer))
   "Directory containing OpenSSL ssl-tests .cnf files.")
 
 (test openssl-test-loading

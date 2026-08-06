@@ -14,9 +14,9 @@
 (setf *compile-verbose* nil *compile-print* nil *load-verbose* nil *load-print* nil)
 (push #p"/home/green/git/pure-tls/" asdf:*central-registry*)
 (handler-bind ((warning (function muffle-warning)))
-  (asdf:load-system :pure-tls/acme))
+  (asdf:load-system :boomer/acme))
 
-(in-package :pure-tls/acme)
+(in-package :boomer/acme)
 
 (defparameter *test-domain* "acme-test.local"
   "Domain to use for testing. Must resolve to 127.0.0.1 in /etc/hosts.")

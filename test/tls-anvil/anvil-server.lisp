@@ -7,11 +7,11 @@
 
 (require :asdf)
 
-;; Load pure-tls from parent directory
-(let ((pure-tls-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
-  (push pure-tls-dir asdf:*central-registry*))
+;; Load boomer from parent directory
+(let ((boomer-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
+  (push boomer-dir asdf:*central-registry*))
 
-(asdf:load-system :pure-tls)
+(asdf:load-system :boomer)
 (require :usocket)
 
 (defpackage #:anvil-server
@@ -40,11 +40,11 @@
 
 (defun load-certificate-chain (cert-file)
   "Load certificate chain from PEM file."
-  (pure-tls:load-certificate-chain cert-file))
+  (boomer:load-certificate-chain cert-file))
 
 (defun load-private-key (key-file)
   "Load private key from PEM file."
-  (pure-tls:load-private-key key-file))
+  (boomer:load-private-key key-file))
 
 (defun handle-client (socket)
   "Handle a single TLS client connection."
@@ -52,7 +52,7 @@
     (handler-case
         (let* ((cert-chain (load-certificate-chain *cert-file*))
                (private-key (load-private-key *key-file*))
-               (tls-stream (pure-tls:make-tls-server-stream
+               (tls-stream (boomer:make-tls-server-stream
                             stream
                             :certificate cert-chain
                             :key private-key)))
@@ -64,7 +64,7 @@
                      (let ((n (handler-case
                                   (read-sequence buf tls-stream)
                                 (end-of-file () 0)
-                                (pure-tls:tls-error () 0))))
+                                (boomer:tls-error () 0))))
                        (when (zerop n)
                          (return))
                        (write-sequence buf tls-stream :end n)

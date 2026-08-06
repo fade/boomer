@@ -15,7 +15,7 @@
 ;;; Fixtures (cert-only, no private keys) live in test/certs/ and were produced
 ;;; with OpenSSL; see the comments on each test for how to regenerate them.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 (def-suite security-regression-tests
   :description "Regression tests for SAST security findings (expected-failing until fixed)")
@@ -24,7 +24,7 @@
 
 ;;;; Note: hex-to-bytes is defined in crypto-tests.lisp; test-cert-path and
 ;;;; *test-certs-dir* are defined in certificate-tests.lisp.  Both files load
-;;;; before this one (see pure-tls.asd :serial t component order).
+;;;; before this one (see boomer.asd :serial t component order).
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: ECH config parsing crashes with a raw, non-TLS error on a
@@ -34,13 +34,13 @@
 ;;;; length fields (pk_len, pn_len, ext_len) and slices with AREF/SUBSEQ BEFORE
 ;;;; the only bounds check ((<= pos end), ech.lisp:92).  An oversized length
 ;;;; makes SUBSEQ raise SB-KERNEL:BOUNDING-INDICES-BAD-ERROR -- an ordinary CL
-;;;; error, NOT a subtype of PURE-TLS:TLS-ERROR.  The EncryptedExtensions
+;;;; error, NOT a subtype of BOOMER:TLS-ERROR.  The EncryptedExtensions
 ;;;; parse path (extensions.lisp ~590) reaches this unconditionally, and the
 ;;;; handshake error handlers only catch TLS-* conditions, so a malicious peer
 ;;;; aborts the handshake with an uncaught Lisp error.
 ;;;;
 ;;;; Secure behaviour: malformed peer ECH bytes MUST surface as a graceful
-;;;; PURE-TLS:TLS-ERROR (e.g. tls-decode-error / tls-handshake-error), never a
+;;;; BOOMER:TLS-ERROR (e.g. tls-decode-error / tls-handshake-error), never a
 ;;;; raw bounds error.  This test will pass once the ECH parser validates each
 ;;;; length against the remaining buffer (or routes through the bounds-checked
 ;;;; tls-buffer readers).
@@ -56,8 +56,8 @@
   (let ((bytes (hex-to-bytes "00 09 fe 0d 00 05 00 00 20 ff ff")))
     ;; Currently raises SB-KERNEL:BOUNDING-INDICES-BAD-ERROR (not a tls-error),
     ;; so this SIGNALS assertion fails until the parser is hardened.
-    (signals pure-tls:tls-error
-      (pure-tls::parse-ech-config-list bytes))))
+    (signals boomer:tls-error
+      (boomer::parse-ech-config-list bytes))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: ExtendedKeyUsage (EKU) is recognised but never enforced.
@@ -97,21 +97,21 @@
 (test clientauth-only-leaf-rejected-for-server-auth
   "A clientAuth-only leaf must not validate as a server certificate."
   ;; Force the pure-Lisp verification path (not the OS native verifiers).
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil))
-    (let* ((root (pure-tls:parse-certificate-from-file
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil))
+    (let* ((root (boomer:parse-certificate-from-file
                   (test-cert-path "security-regression-root-ca.pem")))
-           (leaf (pure-tls:parse-certificate-from-file
+           (leaf (boomer:parse-certificate-from-file
                   (test-cert-path "security-regression-clientauth-leaf.pem"))))
       ;; Sanity: the fixture really is EKU clientAuth-only with a critical EKU
       ;; extension that the verifier currently treats as "known".
       (is (member :extended-key-usage
-                  (pure-tls::certificate-critical-extensions leaf))
+                  (boomer::certificate-critical-extensions leaf))
           "Fixture leaf should carry a critical ExtendedKeyUsage extension")
       ;; With :purpose :server-auth, a clientAuth-only leaf must be rejected.
       ;; (now and hostname are positional &optional args before the &key.)
-      (signals pure-tls:tls-certificate-error
-        (pure-tls::verify-certificate-chain (list leaf) (list root)
+      (signals boomer:tls-certificate-error
+        (boomer::verify-certificate-chain (list leaf) (list root)
                                             (get-universal-time) nil
                                             :purpose :server-auth)))))
 
@@ -130,14 +130,14 @@
 ;;;; resumed Finished ONLY when the accepted PSK's ticket proves verification of
 ;;;; the SAME host.  Otherwise it fails closed, exactly as before.
 ;;;;
-;;;; These proofs drive a real pure-tls loopback (pure-tls server + pure-tls
+;;;; These proofs drive a real boomer loopback (boomer server + boomer
 ;;;; client over 127.0.0.1) so the handshakes are genuine, and they keep the
 ;;;; process-global ticket cache WARM across connections (no per-connection
 ;;;; reset) so resumption exercises the real cache.
 ;;;;
 ;;;; Fixtures generated with (long-dated CA + leaf, SAN=resumption.test):
 ;;;;   openssl req -x509 -newkey rsa:2048 -nodes -keyout resumption-ca.key \
-;;;;     -out resumption-ca.pem -subj "/CN=pure-tls Resumption Test CA" \
+;;;;     -out resumption-ca.pem -subj "/CN=boomer Resumption Test CA" \
 ;;;;     -days 36500 -sha256 \
 ;;;;     -addext "basicConstraints=critical,CA:TRUE" \
 ;;;;     -addext "keyUsage=critical,keyCertSign,cRLSign"
@@ -152,7 +152,7 @@
 ;;;; ---------------------------------------------------------------------------
 
 (defun %resumption-server-loop (port n-conns ready-flag ready-lock ready-cv server-info)
-  "Accept N-CONNS sequential pure-tls connections on PORT using the resumption
+  "Accept N-CONNS sequential boomer connections on PORT using the resumption
    test leaf certificate.  Each accepted connection completes the handshake
    (which sends a NewSessionTicket), then a single app-data byte is pushed so
    the client's read loop consumes the post-handshake ticket, then the
@@ -177,12 +177,12 @@
                               (setf client-sock
                                     (usocket:socket-accept listen-sock
                                                            :element-type '(unsigned-byte 8)))
-                              (setf tls (pure-tls:make-tls-server-stream
+                              (setf tls (boomer:make-tls-server-stream
                                          (usocket:socket-stream client-sock)
                                          :certificate (test-cert-path "resumption-leaf.pem")
                                          :key (test-cert-path "resumption-leaf.key")))
-                              (push (pure-tls::server-handshake-psk-accepted
-                                     (pure-tls::tls-stream-handshake tls))
+                              (push (boomer::server-handshake-psk-accepted
+                                     (boomer::tls-stream-handshake tls))
                                     (car server-info))
                               ;; App-data byte drives the client's fill-buffer so
                               ;; it consumes the post-handshake NewSessionTicket.
@@ -221,7 +221,7 @@
       (values thread server-info))))
 
 (defun %resumption-client (port hostname verify ca-file)
-  "Open one pure-tls client connection to PORT for HOSTNAME under VERIFY,
+  "Open one boomer client connection to PORT for HOSTNAME under VERIFY,
    trusting only CA-FILE.  On a successful handshake, reads the app-data byte
    (consuming the server's NewSessionTicket into the process-global cache),
    sends an acknowledgement byte, and returns the client handshake object so
@@ -233,15 +233,15 @@
          (progn
            (setf sock (usocket:socket-connect "127.0.0.1" port
                                               :element-type '(unsigned-byte 8)))
-           (let ((ctx (pure-tls:make-tls-context :verify-mode verify
+           (let ((ctx (boomer:make-tls-context :verify-mode verify
                                                  :ca-file ca-file
                                                  :auto-load-system-ca nil)))
-             (setf tls (pure-tls:make-tls-client-stream
+             (setf tls (boomer:make-tls-client-stream
                         (usocket:socket-stream sock)
                         :hostname hostname
                         :verify verify
                         :context ctx))
-             (let ((hs (pure-tls::tls-stream-handshake tls)))
+             (let ((hs (boomer::tls-stream-handshake tls)))
                ;; Consume the post-handshake NewSessionTicket, then acknowledge.
                (read-byte tls)
                (write-byte 43 tls)
@@ -255,100 +255,100 @@
    connections to the same host resume via PSK (server skips its Certificate)
    and the client accepts them as authenticated -- with the real process-global
    ticket cache warm across all connections.  RFC 8446 Sections 2.2 / 4.2.11."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (port (allocate-test-port))
         (ca (test-cert-path "resumption-ca.pem"))
         (host "resumption.test"))
     ;; Start from a clean slate for this host; the cache then stays warm across
     ;; every connection below (never reset between handshakes).
-    (pure-tls::session-ticket-cache-clear host)
+    (boomer::session-ticket-cache-clear host)
     (multiple-value-bind (thread server-info)
         (%spawn-resumption-server port 3)
       (unwind-protect
            (let (hs1 hs2 hs3)
              ;; 1st: full handshake with real certificate verification.
-             (setf hs1 (%resumption-client port host pure-tls:+verify-required+ ca))
-             (is (not (pure-tls::client-handshake-psk-accepted hs1))
+             (setf hs1 (%resumption-client port host boomer:+verify-required+ ca))
+             (is (not (boomer::client-handshake-psk-accepted hs1))
                  "First handshake must be a full (non-resumed) handshake")
-             (is (pure-tls::client-handshake-peer-certificate hs1)
+             (is (boomer::client-handshake-peer-certificate hs1)
                  "First handshake must present a server certificate")
              ;; The ticket minted by connection 1 carries proven provenance.
-             (let ((tk (pure-tls::session-ticket-cache-get host)))
-               (is (and tk (equal (pure-tls::session-ticket-verified-hostname tk) host))
+             (let ((tk (boomer::session-ticket-cache-get host)))
+               (is (and tk (equal (boomer::session-ticket-verified-hostname tk) host))
                    "Cached ticket must record the verified hostname"))
              ;; 2nd: resume via PSK; server skips Certificate; accepted as authenticated.
-             (setf hs2 (%resumption-client port host pure-tls:+verify-required+ ca))
-             (is (pure-tls::client-handshake-psk-accepted hs2)
+             (setf hs2 (%resumption-client port host boomer:+verify-required+ ca))
+             (is (boomer::client-handshake-psk-accepted hs2)
                  "Second connection must resume via PSK, not full-handshake")
-             (is (not (pure-tls::client-handshake-peer-certificate hs2))
+             (is (not (boomer::client-handshake-peer-certificate hs2))
                  "Resumed connection must receive no server certificate")
              ;; 3rd: carry-forward keeps repeated warm-cache resumptions working.
-             (setf hs3 (%resumption-client port host pure-tls:+verify-required+ ca))
-             (is (pure-tls::client-handshake-psk-accepted hs3)
+             (setf hs3 (%resumption-client port host boomer:+verify-required+ ca))
+             (is (boomer::client-handshake-psk-accepted hs3)
                  "Third connection must also resume via PSK")
-             (is (not (pure-tls::client-handshake-peer-certificate hs3))
+             (is (not (boomer::client-handshake-peer-certificate hs3))
                  "Third resumed connection must receive no server certificate")
              ;; Server side agrees: one full handshake, then two resumptions.
              (is (equal (reverse (car server-info)) '(nil t t))
                  "Server must full-handshake once then resume twice"))
-        (pure-tls::session-ticket-cache-clear host)
+        (boomer::session-ticket-cache-clear host)
         (ignore-errors (bt:join-thread thread))))))
 
 (test resumption-nil-provenance-fails-closed
   "A ticket minted by a non-verified (+verify-none+) origin proves no
    authentication; offering it on a +verify-required+ resumption to that host
    must fail closed with a catchable tls-certificate-error."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (port (allocate-test-port))
         (ca (test-cert-path "resumption-ca.pem"))
         (host "resumption.test"))
-    (pure-tls::session-ticket-cache-clear host)
+    (boomer::session-ticket-cache-clear host)
     (multiple-value-bind (thread server-info)
         (%spawn-resumption-server port 2)
       (declare (ignore server-info))
       (unwind-protect
            (progn
              ;; 1st: full handshake under +verify-none+ -> NIL-provenance ticket.
-             (%resumption-client port host pure-tls:+verify-none+ ca)
-             (let ((tk (pure-tls::session-ticket-cache-get host)))
-               (is (and tk (null (pure-tls::session-ticket-verified-hostname tk)))
+             (%resumption-client port host boomer:+verify-none+ ca)
+             (let ((tk (boomer::session-ticket-cache-get host)))
+               (is (and tk (null (boomer::session-ticket-verified-hostname tk)))
                    "A verify-none origin must cache a NIL-provenance ticket"))
              ;; 2nd: resume under +verify-required+ -> must fail closed.
-             (signals pure-tls:tls-certificate-error
-               (%resumption-client port host pure-tls:+verify-required+ ca)))
-        (pure-tls::session-ticket-cache-clear host)
+             (signals boomer:tls-certificate-error
+               (%resumption-client port host boomer:+verify-required+ ca)))
+        (boomer::session-ticket-cache-clear host)
         (ignore-errors (bt:join-thread thread))))))
 
 (test resumption-cross-hostname-fails-closed
   "A ticket whose proven hostname differs from the host being connected to must
    fail closed on resumption, even though the server accepts the PSK -- exercising
    the hostname-equality guard on the resumed certificate-less Finished."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (port (allocate-test-port))
         (ca (test-cert-path "resumption-ca.pem"))
         (host "resumption.test"))
-    (pure-tls::session-ticket-cache-clear host)
+    (boomer::session-ticket-cache-clear host)
     (multiple-value-bind (thread server-info)
         (%spawn-resumption-server port 2)
       (declare (ignore server-info))
       (unwind-protect
            (progn
              ;; 1st: full verify-required handshake mints a ticket for HOST.
-             (%resumption-client port host pure-tls:+verify-required+ ca)
+             (%resumption-client port host boomer:+verify-required+ ca)
              ;; Rewrite the cached ticket's proven hostname to a different host
              ;; while leaving it keyed under HOST, so the next resumption offers a
              ;; genuine PSK whose provenance is for the wrong identity.
-             (let ((tk (pure-tls::session-ticket-cache-get host)))
-               (is (and tk (equal (pure-tls::session-ticket-verified-hostname tk) host))
+             (let ((tk (boomer::session-ticket-cache-get host)))
+               (is (and tk (equal (boomer::session-ticket-verified-hostname tk) host))
                    "Sanity: minted ticket is provenance-stamped for HOST")
-               (setf (pure-tls::session-ticket-verified-hostname tk) "other-identity.test"))
+               (setf (boomer::session-ticket-verified-hostname tk) "other-identity.test"))
              ;; 2nd: server resumes the PSK, but its provenance is cross-hostname.
-             (signals pure-tls:tls-certificate-error
-               (%resumption-client port host pure-tls:+verify-required+ ca)))
-        (pure-tls::session-ticket-cache-clear host)
+             (signals boomer:tls-certificate-error
+               (%resumption-client port host boomer:+verify-required+ ca)))
+        (boomer::session-ticket-cache-clear host)
         (ignore-errors (bt:join-thread thread))))))
 
 ;;;; ---------------------------------------------------------------------------
@@ -358,7 +358,7 @@
 ;;;; make-tls-context's explicit-CA branch loaded the trust store through
 ;;;; read-file-bytes, which opens with-open-file with no :if-does-not-exist,
 ;;;; so a missing/unreadable file raised a raw FILE-ERROR.  FILE-ERROR is not
-;;;; a subtype of PURE-TLS:TLS-ERROR, so a non-interactive consumer's
+;;;; a subtype of BOOMER:TLS-ERROR, so a non-interactive consumer's
 ;;;; fail-closed handler (which catches only the tls-error family) could not
 ;;;; catch it and the image died.  A garbage or empty file was worse: the
 ;;;; parser swallowed the decode error and returned an empty trust store, so
@@ -366,7 +366,7 @@
 ;;;;
 ;;;; Secure behaviour: an explicitly-named CA source that cannot be read or
 ;;;; that yields zero trust anchors is a misconfiguration -- make-tls-context
-;;;; must fail closed with a catchable PURE-TLS:TLS-CERTIFICATE-ERROR and the
+;;;; must fail closed with a catchable BOOMER:TLS-CERTIFICATE-ERROR and the
 ;;;; image must survive.  Each case passes :auto-load-system-ca nil so the bad
 ;;;; file is the only trust source (no accidental system-store fallback).
 ;;;; ---------------------------------------------------------------------------
@@ -375,9 +375,9 @@
   "An unusable explicit :ca-file must signal a catchable tls-error-family
    condition, never crash the image with a raw file-error."
   (let* ((dir (uiop:temporary-directory))
-         (empty (merge-pathnames "pure-tls-fail-closed-empty.pem" dir))
-         (garbage (merge-pathnames "pure-tls-fail-closed-garbage.pem" dir))
-         (missing (merge-pathnames "pure-tls-fail-closed-does-not-exist.pem" dir)))
+         (empty (merge-pathnames "boomer-fail-closed-empty.pem" dir))
+         (garbage (merge-pathnames "boomer-fail-closed-garbage.pem" dir))
+         (missing (merge-pathnames "boomer-fail-closed-does-not-exist.pem" dir)))
     (unwind-protect
          (progn
            ;; Empty file: zero certificates parse -> fail closed on empty store.
@@ -393,24 +393,24 @@
            ;; Make sure the "missing" path really is absent.
            (ignore-errors (delete-file missing))
            ;; Missing path (guaranteed absent).
-           (signals pure-tls:tls-certificate-error
-             (pure-tls:make-tls-context :ca-file (namestring missing)
+           (signals boomer:tls-certificate-error
+             (boomer:make-tls-context :ca-file (namestring missing)
                                         :auto-load-system-ca nil))
            ;; Empty file (zero usable anchors).
-           (signals pure-tls:tls-certificate-error
-             (pure-tls:make-tls-context :ca-file (namestring empty)
+           (signals boomer:tls-certificate-error
+             (boomer:make-tls-context :ca-file (namestring empty)
                                         :auto-load-system-ca nil))
            ;; Garbage non-PEM file.
-           (signals pure-tls:tls-certificate-error
-             (pure-tls:make-tls-context :ca-file (namestring garbage)
+           (signals boomer:tls-certificate-error
+             (boomer:make-tls-context :ca-file (namestring garbage)
                                         :auto-load-system-ca nil))
            ;; Not-a-regular-file: pass the temp directory itself.  Opening a
            ;; directory as a file signals an error, which is portable AND
            ;; root-safe -- chmod 000 is bypassed when the suite runs as root,
            ;; so we deliberately use a directory path rather than an unreadable
            ;; regular file.
-           (signals pure-tls:tls-certificate-error
-             (pure-tls:make-tls-context :ca-file (namestring dir)
+           (signals boomer:tls-certificate-error
+             (boomer:make-tls-context :ca-file (namestring dir)
                                         :auto-load-system-ca nil)))
       (ignore-errors (delete-file empty))
       (ignore-errors (delete-file garbage)))))
@@ -437,7 +437,7 @@
   "Parse every CERTIFICATE block in a PEM file, in file order (leaf first).
    parse-certificate-from-file only decodes the first block, so multi-cert
    chain fixtures need this."
-  (let ((text (pure-tls::octets-to-string (pure-tls::read-file-bytes path)))
+  (let ((text (boomer::octets-to-string (boomer::read-file-bytes path)))
         (certs nil)
         (pos 0)
         (begin "-----BEGIN CERTIFICATE-----")
@@ -446,8 +446,8 @@
           while b
           for e = (search end text :start2 b)
           while e
-          do (push (pure-tls::parse-certificate
-                    (pure-tls::base64-decode
+          do (push (boomer::parse-certificate
+                    (boomer::base64-decode
                      (remove-if (lambda (c) (member c '(#\Newline #\Return #\Space)))
                                 (subseq text (+ b (length begin)) e))))
                    certs)
@@ -463,125 +463,125 @@
    window is always-valid; NOT-BEFORE / NOT-AFTER override it for date proofs.
    Names are single-CN so certificate-issued-by-p links a leaf to its issuer by
    equal CN."
-  (pure-tls::make-x509-certificate
-   :subject (pure-tls::make-x509-name :rdns (list (cons :common-name subject-cn)))
-   :issuer (pure-tls::make-x509-name :rdns (list (cons :common-name issuer-cn)))
+  (boomer::make-x509-certificate
+   :subject (boomer::make-x509-name :rdns (list (cons :common-name subject-cn)))
+   :issuer (boomer::make-x509-name :rdns (list (cons :common-name issuer-cn)))
    :validity-not-before not-before
    :validity-not-after not-after
    :extensions
    (append
     (ecase basic-constraints
-      (:ca-true (list (pure-tls::make-x509-extension
+      (:ca-true (list (boomer::make-x509-extension
                        :oid :basic-constraints :critical t
                        :value (if path-length
                                   (list :ca t :path-length-constraint path-length)
                                   (list :ca t)))))
-      (:ca-false (list (pure-tls::make-x509-extension
+      (:ca-false (list (boomer::make-x509-extension
                         :oid :basic-constraints :critical t
                         :value (list :ca nil))))
       (:absent nil))
     (when key-usage
-      (list (pure-tls::make-x509-extension
+      (list (boomer::make-x509-extension
              :oid :key-usage :critical t :value key-usage))))))
 
 (test chain-rejects-ca-false-intermediate
   "An issuer with BasicConstraints cA=FALSE (or absent) must not be accepted as
    a signing CA."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     ;; Intermediate explicitly asserts cA=FALSE.
     (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
                              :basic-constraints :absent))
           (inter (%chain-cert "Intermediate CA" "Root CA"
                               :basic-constraints :ca-false)))
-      (signals pure-tls:tls-certificate-error
-        (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
+      (signals boomer:tls-certificate-error
+        (boomer::verify-certificate-chain (list leaf inter) (list inter)
                                             now nil :trust-anchor-mode :replace)))
     ;; Intermediate carries no BasicConstraints extension at all.
     (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
                              :basic-constraints :absent))
           (inter (%chain-cert "Intermediate CA" "Root CA"
                               :basic-constraints :absent)))
-      (signals pure-tls:tls-certificate-error
-        (pure-tls::verify-certificate-chain (list leaf inter) (list inter)
+      (signals boomer:tls-certificate-error
+        (boomer::verify-certificate-chain (list leaf inter) (list inter)
                                             now nil :trust-anchor-mode :replace)))))
 
 (test chain-rejects-pathlen-violation
   "A CA asserting pathLenConstraint=0 with an intermediate CA below it in the
    chain must be rejected."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     (destructuring-bind (leaf inter)
         (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
-      (let ((root (pure-tls:parse-certificate-from-file
+      (let ((root (boomer:parse-certificate-from-file
                    (test-cert-path "openssl/root-cert.pem"))))
         ;; Baseline: the untampered chain verifies, so the rejection below is
         ;; attributable solely to the path-length constraint.
-        (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+        (is (boomer::verify-certificate-chain (list leaf inter root) (list root)
                                                 now nil :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Assert pathLenConstraint=0 on the trusted root: it may issue end
         ;; entities but no intermediate CA -- and the chain has exactly one.
         (let ((bc (find :basic-constraints
-                        (pure-tls::x509-certificate-extensions root)
-                        :key #'pure-tls::x509-extension-oid)))
-          (setf (pure-tls::x509-extension-value bc)
+                        (boomer::x509-certificate-extensions root)
+                        :key #'boomer::x509-extension-oid)))
+          (setf (boomer::x509-extension-value bc)
                 (list :ca t :path-length-constraint 0)))
-        (signals pure-tls:tls-certificate-error
-          (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+        (signals boomer:tls-certificate-error
+          (boomer::verify-certificate-chain (list leaf inter root) (list root)
                                               now nil :trust-anchor-mode :replace))))))
 
 (test chain-rejects-tampered-signature
   "A chain that passes name / CA / pathLen / date checks but whose leaf
    signature is corrupted must be rejected at signature verification."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     (destructuring-bind (leaf inter)
         (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
-      (let ((root (pure-tls:parse-certificate-from-file
+      (let ((root (boomer:parse-certificate-from-file
                    (test-cert-path "openssl/root-cert.pem"))))
         ;; Baseline: the untampered chain verifies.
-        (is (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+        (is (boomer::verify-certificate-chain (list leaf inter root) (list root)
                                                 now nil :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Flip one byte of the leaf signature.  Every earlier check still
         ;; passes, so a rejection can only come from signature verification.
-        (let ((sig (copy-seq (pure-tls::x509-certificate-signature leaf))))
+        (let ((sig (copy-seq (boomer::x509-certificate-signature leaf))))
           (setf (aref sig 20) (logxor #xff (aref sig 20)))
-          (setf (pure-tls::x509-certificate-signature leaf) sig))
-        (signals pure-tls:tls-certificate-error
-          (pure-tls::verify-certificate-chain (list leaf inter root) (list root)
+          (setf (boomer::x509-certificate-signature leaf) sig))
+        (signals boomer:tls-certificate-error
+          (boomer::verify-certificate-chain (list leaf inter root) (list root)
                                               now nil :trust-anchor-mode :replace))))))
 
 (test chain-rejects-expired-leaf
   "A leaf whose notAfter is in the past must be rejected."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     (let ((root (%chain-cert "Root CA" "Root CA" :basic-constraints :ca-true))
           (leaf (%chain-cert "leaf.example" "Root CA"
                              :basic-constraints :absent
                              :not-after (- now 100000))))
-      ;; tls-certificate-expired is internal to pure-tls (double colon).
-      (signals pure-tls::tls-certificate-expired
-        (pure-tls::verify-certificate-chain (list leaf root) (list root)
+      ;; tls-certificate-expired is internal to boomer (double colon).
+      (signals boomer::tls-certificate-expired
+        (boomer::verify-certificate-chain (list leaf root) (list root)
                                             now nil :trust-anchor-mode :replace)))))
 
 (test chain-rejects-not-yet-valid-leaf
   "A leaf whose notBefore is in the future must be rejected."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     (let ((root (%chain-cert "Root CA" "Root CA" :basic-constraints :ca-true))
           (leaf (%chain-cert "leaf.example" "Root CA"
                              :basic-constraints :absent
                              :not-before (+ now 100000000))))
-      ;; tls-certificate-not-yet-valid is internal to pure-tls (double colon).
-      (signals pure-tls::tls-certificate-not-yet-valid
-        (pure-tls::verify-certificate-chain (list leaf root) (list root)
+      ;; tls-certificate-not-yet-valid is internal to boomer (double colon).
+      (signals boomer::tls-certificate-not-yet-valid
+        (boomer::verify-certificate-chain (list leaf root) (list root)
                                             now nil :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
@@ -600,8 +600,8 @@
 (test chain-rejects-keycertsign-absent-issuer
   "An issuer with KeyUsage present but lacking keyCertSign must be rejected as a
    signing CA, even with BasicConstraints cA=TRUE."
-  (let ((pure-tls:*use-windows-certificate-store* nil)
-        (pure-tls:*use-macos-keychain* nil)
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil)
         (now (get-universal-time)))
     (let ((leaf (%chain-cert "leaf.example" "Issuing CA"
                              :basic-constraints :absent))
@@ -609,8 +609,8 @@
           (issuer (%chain-cert "Issuing CA" "Root CA"
                                :basic-constraints :ca-true
                                :key-usage '(:crl-sign))))
-      (signals pure-tls:tls-certificate-error
-        (pure-tls::verify-certificate-chain (list leaf issuer) (list issuer)
+      (signals boomer:tls-certificate-error
+        (boomer::verify-certificate-chain (list leaf issuer) (list issuer)
                                             now nil :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
@@ -625,15 +625,15 @@
 
 (defun %san-cert (&rest dns-names)
   "Build a certificate whose only identity is the given SAN dNSName(s)."
-  (pure-tls::make-x509-certificate
-   :extensions (list (pure-tls::make-x509-extension
+  (boomer::make-x509-certificate
+   :extensions (list (boomer::make-x509-extension
                       :oid :subject-alt-name
                       :value (mapcar (lambda (d) (list :dns d)) dns-names)))))
 
 (defun %cn-only-cert (common-name)
   "Build a certificate with a Subject Common Name and NO subjectAltName."
-  (pure-tls::make-x509-certificate
-   :subject (pure-tls::make-x509-name
+  (boomer::make-x509-certificate
+   :subject (boomer::make-x509-name
              :rdns (list (cons :common-name common-name)))))
 
 (defun %nul-name ()
@@ -645,19 +645,19 @@
   (let ((evil-name (%nul-name)))
     ;; (a) The malicious name reaching the validator as the SAN, with the
     ;;     truncated benign identity requested, must not match.
-    (signals pure-tls:tls-verification-error
-      (pure-tls:verify-hostname (%san-cert evil-name) "www.bank.com"))
+    (signals boomer:tls-verification-error
+      (boomer:verify-hostname (%san-cert evil-name) "www.bank.com"))
     ;; (b) The malicious name reaching the validator as the requested identity
     ;;     is rejected outright as an invalid DNS name.
-    (signals pure-tls:tls-verification-error
-      (pure-tls:verify-hostname (%san-cert "www.bank.com") evil-name))))
+    (signals boomer:tls-verification-error
+      (boomer:verify-hostname (%san-cert "www.bank.com") evil-name))))
 
 (test verify-hostname-u-label-still-verifies
   "The DNS name-safety check runs after IDNA normalization, so a Unicode
    (U-label) requested identity still verifies against its punycode A-label
    SAN rather than being rejected as non-LDH."
   (let ((u-label (format nil "m~Cnchen.example.com" (code-char 252)))) ; münchen
-    (is-true (pure-tls:verify-hostname
+    (is-true (boomer:verify-hostname
               (%san-cert "xn--mnchen-3ya.example.com") u-label))))
 
 ;;;; ---------------------------------------------------------------------------
@@ -671,33 +671,33 @@
 (test verify-hostname-default-honors-wildcard-san
   "The default policy honors an RFC 6125 wildcard SAN: *.example.com must
    authenticate www.example.com when no explicit policy is supplied."
-  (is (pure-tls:verify-hostname (%san-cert "*.example.com") "www.example.com")
+  (is (boomer:verify-hostname (%san-cert "*.example.com") "www.example.com")
       "A wildcard SAN must authenticate a single-label host under the default policy"))
 
 (test verify-hostname-allow-wildcards-nil-excludes-wildcard-san
   "With ALLOW-WILDCARDS disabled, a wildcard SAN is excluded from matching even
    where the general matcher would cover it, while an exact SAN still matches."
-  (let ((policy (pure-tls:make-hostname-policy :allow-wildcards nil)))
-    (signals pure-tls:tls-verification-error
-      (pure-tls:verify-hostname (%san-cert "*.example.com") "foo.example.com"
+  (let ((policy (boomer:make-hostname-policy :allow-wildcards nil)))
+    (signals boomer:tls-verification-error
+      (boomer:verify-hostname (%san-cert "*.example.com") "foo.example.com"
                                 :policy policy))
-    (is (pure-tls:verify-hostname (%san-cert "dns.google") "dns.google"
+    (is (boomer:verify-hostname (%san-cert "dns.google") "dns.google"
                                   :policy policy)
         "An exact SAN must still match when wildcards are disabled")))
 
 (test verify-hostname-default-permits-cn-fallback
   "The default policy falls back to the Subject Common Name for a no-SAN
    certificate (deprecated but still deployed)."
-  (is (pure-tls:verify-hostname (%cn-only-cert "www.example.com")
+  (is (boomer:verify-hostname (%cn-only-cert "www.example.com")
                                 "www.example.com")
       "CN fallback must authenticate a matching no-SAN certificate by default"))
 
 (test verify-hostname-allow-cn-fallback-nil-rejects-no-san
   "With ALLOW-CN-FALLBACK disabled the Common Name is never consulted, so a
    no-SAN certificate is rejected even when its CN matches exactly."
-  (let ((policy (pure-tls:make-hostname-policy :allow-cn-fallback nil)))
-    (signals pure-tls:tls-verification-error
-      (pure-tls:verify-hostname (%cn-only-cert "www.example.com")
+  (let ((policy (boomer:make-hostname-policy :allow-cn-fallback nil)))
+    (signals boomer:tls-verification-error
+      (boomer:verify-hostname (%cn-only-cert "www.example.com")
                                 "www.example.com"
                                 :policy policy))))
 
@@ -705,13 +705,13 @@
   "The general RFC 6125 wildcard matcher is untouched by the policy seam: a
    single-label wildcard still matches structurally, *.com does not, and a
    wildcard over a multi-label public suffix does not."
-  (is (pure-tls::hostname-matches-p "*.example.com" "foo.example.com"))
-  (is (not (pure-tls::hostname-matches-p "*.com" "foo.com")))
-  (is (not (pure-tls::hostname-matches-p "*.co.uk" "foo.co.uk"))))
+  (is (boomer::hostname-matches-p "*.example.com" "foo.example.com"))
+  (is (not (boomer::hostname-matches-p "*.com" "foo.com")))
+  (is (not (boomer::hostname-matches-p "*.co.uk" "foo.co.uk"))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Handshake reassembly hardening: a peer controls the uint24 length in the
-;;;; handshake message header and could previously force pure-tls to buffer up
+;;;; handshake message header and could previously force boomer to buffer up
 ;;;; to 16 MiB per message via many record-sized fragments, with O(n^2) copy
 ;;;; work from repeated full-buffer concatenation.  The fix (a) rejects an
 ;;;; excessive advertised length as soon as the 4-byte header is visible,
@@ -722,85 +722,85 @@
 (defun %hs-header (msg-type body-length &optional (body-bytes 0))
   "Build a handshake message prefix: 4-byte header advertising BODY-LENGTH,
    followed by BODY-BYTES zero bytes of (possibly partial) body."
-  (pure-tls::concat-octet-vectors
-   (pure-tls::octet-vector msg-type
+  (boomer::concat-octet-vectors
+   (boomer::octet-vector msg-type
                            (ldb (byte 8 16) body-length)
                            (ldb (byte 8 8) body-length)
                            (ldb (byte 8 0) body-length))
-   (pure-tls::make-octet-vector body-bytes)))
+   (boomer::make-octet-vector body-bytes)))
 
 (test handshake-buffer-rejects-excessive-non-certificate-length
   "A non-certificate handshake header advertising one byte over
    *max-handshake-message-size* is rejected before any further append."
-  (let ((buffer (%hs-header pure-tls::+handshake-finished+
-                            (1+ pure-tls::*max-handshake-message-size*))))
-    (signals pure-tls:tls-handshake-error
-      (pure-tls::check-handshake-buffer-size buffer nil))))
+  (let ((buffer (%hs-header boomer::+handshake-finished+
+                            (1+ boomer::*max-handshake-message-size*))))
+    (signals boomer:tls-handshake-error
+      (boomer::check-handshake-buffer-size buffer nil))))
 
 (test handshake-buffer-accepts-length-at-cap
   "A handshake header advertising exactly the configured maximum passes the
    size check (and an incomplete header is never checked)."
-  (is-false (pure-tls::check-handshake-buffer-size
-             (%hs-header pure-tls::+handshake-finished+
-                         pure-tls::*max-handshake-message-size*)
+  (is-false (boomer::check-handshake-buffer-size
+             (%hs-header boomer::+handshake-finished+
+                         boomer::*max-handshake-message-size*)
              nil))
   ;; Header incomplete: no length to validate yet
-  (is-false (pure-tls::check-handshake-buffer-size
-             (pure-tls::octet-vector pure-tls::+handshake-finished+ 0) nil)))
+  (is-false (boomer::check-handshake-buffer-size
+             (boomer::octet-vector boomer::+handshake-finished+ 0) nil)))
 
 (test handshake-buffer-certificate-honors-configured-cap
   "A Certificate message is bounded by *max-certificate-list-size* (plus
    framing overhead) when that limit is set, and rejected above it."
-  (let ((pure-tls:*max-certificate-list-size* 1000))
+  (let ((boomer:*max-certificate-list-size* 1000))
     ;; Within cap + framing overhead: accepted
-    (is-false (pure-tls::check-handshake-buffer-size
-               (%hs-header pure-tls::+handshake-certificate+ 1259) nil))
+    (is-false (boomer::check-handshake-buffer-size
+               (%hs-header boomer::+handshake-certificate+ 1259) nil))
     ;; One byte over: rejected
-    (signals pure-tls:tls-handshake-error
-      (pure-tls::check-handshake-buffer-size
-       (%hs-header pure-tls::+handshake-certificate+ 1260) nil))))
+    (signals boomer:tls-handshake-error
+      (boomer::check-handshake-buffer-size
+       (%hs-header boomer::+handshake-certificate+ 1260) nil))))
 
 (test handshake-buffer-certificate-unlimited-allows-protocol-max
   "With *max-certificate-list-size* = 0 (unlimited), a Certificate message may
    advertise up to the uint24 protocol maximum, preserving existing behavior."
-  (let ((pure-tls:*max-certificate-list-size* 0))
-    (is-false (pure-tls::check-handshake-buffer-size
-               (%hs-header pure-tls::+handshake-certificate+ #xFFFFFF) nil))
+  (let ((boomer:*max-certificate-list-size* 0))
+    (is-false (boomer::check-handshake-buffer-size
+               (%hs-header boomer::+handshake-certificate+ #xFFFFFF) nil))
     ;; But a non-certificate type claiming the same length is still rejected
-    (signals pure-tls:tls-handshake-error
-      (pure-tls::check-handshake-buffer-size
-       (%hs-header pure-tls::+handshake-encrypted-extensions+ #xFFFFFF) nil))))
+    (signals boomer:tls-handshake-error
+      (boomer::check-handshake-buffer-size
+       (%hs-header boomer::+handshake-encrypted-extensions+ #xFFFFFF) nil))))
 
 (test handshake-buffer-fragmented-message-reassembles
   "A message fragmented across several appends still reassembles and extracts
    correctly through the growable reassembly buffer."
   (let* ((body-length 100)
-         (fragment-1 (%hs-header pure-tls::+handshake-finished+ body-length 40))
-         (fragment-2 (pure-tls::make-octet-vector 40 :initial-element 1))
-         (fragment-3 (pure-tls::make-octet-vector 20 :initial-element 2))
+         (fragment-1 (%hs-header boomer::+handshake-finished+ body-length 40))
+         (fragment-2 (boomer::make-octet-vector 40 :initial-element 1))
+         (fragment-3 (boomer::make-octet-vector 20 :initial-element 2))
          (buffer nil))
-    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-1))
-    (is-false (pure-tls::handshake-buffer-has-complete-message-p buffer))
-    (is-false (pure-tls::check-handshake-buffer-size buffer nil))
-    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-2))
-    (is-false (pure-tls::handshake-buffer-has-complete-message-p buffer))
-    (setf buffer (pure-tls::handshake-buffer-append buffer fragment-3))
-    (is-true (pure-tls::handshake-buffer-has-complete-message-p buffer))
+    (setf buffer (boomer::handshake-buffer-append buffer fragment-1))
+    (is-false (boomer::handshake-buffer-has-complete-message-p buffer))
+    (is-false (boomer::check-handshake-buffer-size buffer nil))
+    (setf buffer (boomer::handshake-buffer-append buffer fragment-2))
+    (is-false (boomer::handshake-buffer-has-complete-message-p buffer))
+    (setf buffer (boomer::handshake-buffer-append buffer fragment-3))
+    (is-true (boomer::handshake-buffer-has-complete-message-p buffer))
     (multiple-value-bind (message-bytes remaining)
-        (pure-tls::handshake-buffer-extract-message buffer)
+        (boomer::handshake-buffer-extract-message buffer)
       (is (null remaining))
-      (is (equalp (pure-tls::concat-octet-vectors fragment-1 fragment-2 fragment-3)
+      (is (equalp (boomer::concat-octet-vectors fragment-1 fragment-2 fragment-3)
                   message-bytes)))))
 
 (test handshake-buffer-append-grows-in-place
   "handshake-buffer-append reuses the growable buffer across appends instead
    of allocating and re-copying the full accumulated buffer per fragment."
-  (let* ((first (pure-tls::make-octet-vector 512 :initial-element 3))
-         (second (pure-tls::make-octet-vector 512 :initial-element 4))
-         (buffer (pure-tls::handshake-buffer-append nil first)))
-    (is (eq buffer (pure-tls::handshake-buffer-append buffer second)))
+  (let* ((first (boomer::make-octet-vector 512 :initial-element 3))
+         (second (boomer::make-octet-vector 512 :initial-element 4))
+         (buffer (boomer::handshake-buffer-append nil first)))
+    (is (eq buffer (boomer::handshake-buffer-append buffer second)))
     (is (= 1024 (length buffer)))
-    (is (equalp (pure-tls::concat-octet-vectors first second)
+    (is (equalp (boomer::concat-octet-vectors first second)
                 (coerce buffer '(vector (unsigned-byte 8)))))))
 
 (test structures-holding-live-key-material-have-no-copier
@@ -819,22 +819,22 @@
    Checked by name, because the failure cannot honestly be demonstrated: showing
    it means performing the nonce reuse."
   (dolist (name '("COPY-AEAD-CIPHER" "COPY-RECORD-LAYER"))
-    (let ((symbol (find-symbol name "PURE-TLS")))
+    (let ((symbol (find-symbol name "BOOMER")))
       (is (not (and symbol (fboundp symbol)))
           "~A must not exist; no correct copy of a live cipher, or of a live ~
            record layer, can be written."
           name)))
   ;; The control: suppressing the copier is not the same as breaking the
   ;; structure, and the ordinary constructors still work.
-  (let ((cipher (pure-tls::make-aead pure-tls:+tls-aes-128-gcm-sha256+
-                                     (pure-tls::make-octet-vector 16)
-                                     (pure-tls::make-octet-vector 12))))
-    (is (pure-tls::aead-cipher-p cipher)
+  (let ((cipher (boomer::make-aead boomer:+tls-aes-128-gcm-sha256+
+                                     (boomer::make-octet-vector 16)
+                                     (boomer::make-octet-vector 12))))
+    (is (boomer::aead-cipher-p cipher)
         "MAKE-AEAD still builds a cipher")
-    (is (zerop (pure-tls::aead-cipher-sequence-number cipher))
+    (is (zerop (boomer::aead-cipher-sequence-number cipher))
         "starting, as a fresh cipher must, from sequence number zero")))
 
 (defun run-security-regression-tests ()
   "Run the security regression suite.  Returns T if all tests pass."
-  (format t "~&=== Running pure-tls Security Regression Tests ===~%~%")
+  (format t "~&=== Running boomer Security Regression Tests ===~%~%")
   (run! 'security-regression-tests))

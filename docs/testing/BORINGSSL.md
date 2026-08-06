@@ -1,6 +1,6 @@
-# Integrating BoringSSL Test Infrastructure with pure-tls
+# Integrating BoringSSL Test Infrastructure with boomer
 
-This document describes how to leverage BoringSSL's comprehensive TLS test suite to validate `pure-tls`.
+This document describes how to leverage BoringSSL's comprehensive TLS test suite to validate `boomer`.
 
 ## Overview
 
@@ -26,7 +26,7 @@ Ready-to-use PEM key files in `ssl/test/runner/`:
 | `ecdsa_p521_key.pem` | ECDSA P-521 | Extended curve tests |
 | `ed25519_key.pem` | Ed25519 | EdDSA tests |
 
-**Action**: Copy to `test/certs/` for use in pure-tls tests.
+**Action**: Copy to `test/certs/` for use in boomer tests.
 
 ### 2. ProtocolBugs Reference
 
@@ -108,11 +108,11 @@ Extract test patterns and data without the full shim infrastructure:
 
 ### Approach B: Shim Integration ✅ IMPLEMENTED
 
-We implemented a full pure-tls shim following `PORTING.md`:
+We implemented a full boomer shim following `PORTING.md`:
 
 ```
 ┌─────────────────┐     TCP      ┌─────────────────┐
-│  Go Test Runner │◄────────────►│  pure-tls Shim  │
+│  Go Test Runner │◄────────────►│  boomer Shim  │
 │  (runner.go)    │              │  (Lisp binary)  │
 └─────────────────┘              └─────────────────┘
 ```
@@ -180,7 +180,7 @@ make boringssl-tests
 - Shim connects to runner and sends shim-id ✅
 - Exit code 89 properly returned for unimplemented features ✅
 - DTLS and session resumption tests correctly skipped ✅
-- TLS 1.2 tests correctly rejected (pure-tls is TLS 1.3 only) ✅
+- TLS 1.2 tests correctly rejected (boomer is TLS 1.3 only) ✅
 - TLS 1.3 handshakes work correctly ✅
 
 **Supported Shim Flags:**
@@ -221,7 +221,7 @@ make boringssl-tests
 | `runner/PORTING.md` | 115 | Shim integration guide |
 | `test_config.h` | 9,300 | Shim flag definitions |
 
-## ProtocolBugs Checklist for pure-tls
+## ProtocolBugs Checklist for boomer
 
 Priority bugs to test (TLS 1.3 relevant):
 

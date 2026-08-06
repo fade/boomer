@@ -11,12 +11,12 @@
 
 (in-package #:cl-user)
 
-(defpackage #:pure-tls/acme/test
+(defpackage #:boomer/acme/test
   (:use #:cl #:fiveam)
   (:export #:run-acme-retry-tests
            #:acme-retry-tests))
 
-(in-package #:pure-tls/acme/test)
+(in-package #:boomer/acme/test)
 
 (def-suite acme-retry-tests
   :description "Retry/restart handling for recoverable ACME HTTP responses.")

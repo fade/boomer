@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS context for configuration and session management.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; TLS Context
 
@@ -372,7 +372,7 @@
         (setf certs (append certs (trust-store-certificates dir-store)))))
     (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
       (when (and debug (string/= debug ""))
-        (format *error-output* "; pure-tls: trust store certs=~D ca-file=~A ca-dir=~A~%"
+        (format *error-output* "; boomer: trust store certs=~D ca-file=~A ca-dir=~A~%"
                 (length certs) ca-file ca-directory)))
     (make-trust-store :certificates certs)))
 

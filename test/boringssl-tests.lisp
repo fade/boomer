@@ -1,4 +1,4 @@
-;;; boringssl-tests.lisp --- BoringSSL test patterns adapted for pure-tls
+;;; boringssl-tests.lisp --- BoringSSL test patterns adapted for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
@@ -6,7 +6,7 @@
 ;;;
 ;;; This file implements tests based on BoringSSL's comprehensive test
 ;;; suite patterns. Rather than running through the full shim infrastructure,
-;;; these tests validate pure-tls against the test patterns.
+;;; these tests validate boomer against the test patterns.
 ;;;
 ;;; Test patterns are organized by category from BoringSSL's test files:
 ;;;   - basic_tests.go - Core TLS behavior
@@ -18,7 +18,7 @@
 ;;; These tests focus on validating specific BoringSSL test patterns
 ;;; without requiring the full shim binary architecture.
 
-(in-package #:pure-tls/test)
+(in-package #:boomer/test)
 
 ;;;; Test Suite Definition
 (def-suite boringssl-tests
@@ -29,7 +29,7 @@
 ;;;; Test Certificates Directory
 (defparameter *boringssl-certs-dir*
   (merge-pathnames "test/certs/boringssl/"
-                   (asdf:system-source-directory :pure-tls))
+                   (asdf:system-source-directory :boomer))
   "Directory containing BoringSSL test keys.")
 
 ;;;; Helper Functions
@@ -49,26 +49,26 @@
   "Test loading RSA 2048-bit key from BoringSSL test files."
   (let ((path (boringssl-key-path "rsa_2048_key.pem")))
     (is (probe-file path) "RSA 2048 key file exists")
-    (let ((key (pure-tls:load-private-key path)))
+    (let ((key (boomer:load-private-key path)))
       (is (not (null key)) "RSA 2048 key loaded successfully"))))
 
 (test (boringssl-ecdsa-p256-key :suite boringssl-tests)
   "Test loading ECDSA P-256 key from BoringSSL test files."
   (let ((path (boringssl-key-path "ecdsa_p256_key.pem")))
     (is (probe-file path) "ECDSA P-256 key file exists")
-    (let ((key (pure-tls:load-private-key path)))
+    (let ((key (boomer:load-private-key path)))
       (is (not (null key)) "ECDSA P-256 key loaded successfully"))))
 
 (test (boringssl-ecdsa-p384-key :suite boringssl-tests)
   "Test loading ECDSA P-384 key from BoringSSL test files."
   (let ((path (boringssl-key-path "ecdsa_p384_key.pem")))
     (is (probe-file path) "ECDSA P-384 key file exists")
-    (let ((key (pure-tls:load-private-key path)))
+    (let ((key (boomer:load-private-key path)))
       (is (not (null key)) "ECDSA P-384 key loaded successfully"))))
 
 ;;;; ProtocolBugs Checklist Tests
 ;;;
-;;; These tests verify pure-tls correctly handles various protocol attacks
+;;; These tests verify boomer correctly handles various protocol attacks
 ;;; from BoringSSL's ProtocolBugs structure in common.go.
 ;;; Tests are organized by priority (Critical, High, Medium, Low).
 
@@ -125,11 +125,11 @@
 (test (boringssl-tls13-cipher-suites-defined :suite boringssl-tests)
   "Verify TLS 1.3 cipher suites are defined.
    From cipher_suite_tests.go."
-  (is (boundp 'pure-tls:+tls-aes-128-gcm-sha256+)
+  (is (boundp 'boomer:+tls-aes-128-gcm-sha256+)
       "TLS_AES_128_GCM_SHA256 is defined")
-  (is (boundp 'pure-tls:+tls-aes-256-gcm-sha384+)
+  (is (boundp 'boomer:+tls-aes-256-gcm-sha384+)
       "TLS_AES_256_GCM_SHA384 is defined")
-  (is (boundp 'pure-tls:+tls-chacha20-poly1305-sha256+)
+  (is (boundp 'boomer:+tls-chacha20-poly1305-sha256+)
       "TLS_CHACHA20_POLY1305_SHA256 is defined"))
 
 ;;;; Alert Tests
@@ -139,15 +139,15 @@
 (test (boringssl-alert-codes-defined :suite boringssl-tests)
   "Verify alert codes are defined.
    From basic_tests.go alert tests."
-  (is (boundp 'pure-tls:+alert-close-notify+)
+  (is (boundp 'boomer:+alert-close-notify+)
       "close_notify alert is defined")
-  (is (boundp 'pure-tls:+alert-handshake-failure+)
+  (is (boundp 'boomer:+alert-handshake-failure+)
       "handshake_failure alert is defined")
-  (is (boundp 'pure-tls:+alert-bad-certificate+)
+  (is (boundp 'boomer:+alert-bad-certificate+)
       "bad_certificate alert is defined")
-  (is (boundp 'pure-tls:+alert-decode-error+)
+  (is (boundp 'boomer:+alert-decode-error+)
       "decode_error alert is defined")
-  (is (boundp 'pure-tls:+alert-unrecognized-name+)
+  (is (boundp 'boomer:+alert-unrecognized-name+)
       "unrecognized_name alert is defined"))
 
 ;;;; Version Tests
@@ -155,9 +155,9 @@
 ;;; Tests based on version negotiation
 
 (test (boringssl-tls13-only :suite boringssl-tests)
-  "Verify pure-tls is TLS 1.3 only.
-   From version tests - pure-tls only supports TLS 1.3."
-  ;; This is a design decision - pure-tls only supports TLS 1.3
+  "Verify boomer is TLS 1.3 only.
+   From version tests - boomer only supports TLS 1.3."
+  ;; This is a design decision - boomer only supports TLS 1.3
   (is (not (null t)) "TLS 1.3 only implementation confirmed"))
 
 ;;;; Feature Coverage Documentation

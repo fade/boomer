@@ -2,7 +2,7 @@
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
-;;; This script is used by TLS-Anvil to trigger a pure-tls client connection.
+;;; This script is used by TLS-Anvil to trigger a boomer client connection.
 ;;; Usage: sbcl --script tls-anvil-client.lisp <host> <port>
 
 (require :asdf)
@@ -17,18 +17,18 @@
         (let ((host (first args))
               (port (parse-integer (second args))))
 
-          ;; Load pure-tls
-          (asdf:load-system :pure-tls :verbose nil)
+          ;; Load boomer
+          (asdf:load-system :boomer :verbose nil)
           (asdf:load-system :usocket :verbose nil)
 
           ;; Connect to TLS-Anvil server
           (let ((socket (usocket:socket-connect host port :element-type '(unsigned-byte 8))))
             (unwind-protect
                  (let ((tls-stream
-                         (funcall (find-symbol "MAKE-TLS-CLIENT-STREAM" :pure-tls)
+                         (funcall (find-symbol "MAKE-TLS-CLIENT-STREAM" :boomer)
                                   (usocket:socket-stream socket)
                                   :hostname host
-                                  :verify (symbol-value (find-symbol "+VERIFY-NONE+" :pure-tls)))))
+                                  :verify (symbol-value (find-symbol "+VERIFY-NONE+" :boomer)))))
                    ;; Do a simple read/write
                    (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))
                      ;; Try to read - TLS-Anvil may send data

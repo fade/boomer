@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements X.509 certificate verification including hostname matching.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Hostname Verification (RFC 6125 / RFC 2818)
 
@@ -456,12 +456,12 @@ a full list lives at https://publicsuffix.org/.")
     (unless anchored
       (let ((debug (get-environment-variable "OCICL_TLS_DEBUG")))
         (when (and debug (string/= debug ""))
-          (format *error-output* "; pure-tls: chain length=~D trusted-roots=~D~%"
+          (format *error-output* "; boomer: chain length=~D trusted-roots=~D~%"
                   (length chain) (length trusted-roots))
           (loop for cert in chain
                 for idx from 0
                 do (format *error-output*
-                           "; pure-tls: chain[~D] subject-cns=~A issuer-cns=~A~%"
+                           "; boomer: chain[~D] subject-cns=~A issuer-cns=~A~%"
                            idx
                            (certificate-subject-common-names cert)
                            (certificate-issuer-common-names cert)))))

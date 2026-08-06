@@ -6,7 +6,7 @@
 ;;;
 ;;; Certificate Signing Request generation and certificate acquisition.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; Domain key generation
@@ -204,11 +204,11 @@
   (unless (probe-file cert-path)
     (return-from certificate-expires-soon-p t))
   (handler-case
-      (let* ((certs (pure-tls:load-certificate-chain (namestring cert-path)))
+      (let* ((certs (boomer:load-certificate-chain (namestring cert-path)))
              (leaf-cert (first certs)))
         (unless leaf-cert
           (return-from certificate-expires-soon-p t))
-        (let* ((not-after (pure-tls:certificate-not-after leaf-cert))
+        (let* ((not-after (boomer:certificate-not-after leaf-cert))
                (now (get-universal-time))
                (seconds-until-expiry (- not-after now))
                (days-until-expiry (floor seconds-until-expiry (* 24 60 60))))

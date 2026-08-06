@@ -69,62 +69,62 @@ jobs:
       - name: Setup ASDF
         run: |
           mkdir -p ~/.config/common-lisp/source-registry.conf.d/
-          echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
+          echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/boomer.conf
 
       - name: Build system (Linux)
         if: runner.os == 'Linux'
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)'
+            --eval '(asdf:load-system :boomer/test)'
 
       - name: Build system (macOS/Windows)
         if: runner.os != 'Linux'
         run: |
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)'
+            --eval '(asdf:load-system :boomer/test)'
 
       - name: Run offline tests (Linux)
         if: runner.os == 'Linux'
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)' \
-            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+            --eval '(asdf:load-system :boomer/test)' \
+            --eval '(unless (boomer/test:run-tests) (uiop:quit 1))'
 
       - name: Run offline tests (macOS)
         if: runner.os == 'macOS'
         run: |
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)' \
-            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+            --eval '(asdf:load-system :boomer/test)' \
+            --eval '(unless (boomer/test:run-tests) (uiop:quit 1))'
 
       - name: Run offline tests (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 10
         run: |
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)' \
-            --eval '(unless (pure-tls/test:run-tests) (uiop:quit 1))'
+            --eval '(asdf:load-system :boomer/test)' \
+            --eval '(unless (boomer/test:run-tests) (uiop:quit 1))'
 
       - name: Run network tests (Linux)
         if: runner.os == 'Linux'
         run: |
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(asdf:load-system :boomer/test)' \
             --eval '(format t "~%Platform: ~A~%" (lisp-implementation-type))' \
-            --eval '(format t "Windows cert store: ~A~%" pure-tls:*use-windows-certificate-store*)' \
-            --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'
+            --eval '(format t "Windows cert store: ~A~%" boomer:*use-windows-certificate-store*)' \
+            --eval '(unless (boomer/test:run-network-tests) (uiop:quit 1))'
 
       - name: Run network tests (macOS)
         if: runner.os == 'macOS'
         run: |
           sbcl --non-interactive \
-            --eval '(asdf:load-system :pure-tls/test)' \
+            --eval '(asdf:load-system :boomer/test)' \
             --eval '(format t "~%Platform: ~A~%" (lisp-implementation-type))' \
-            --eval '(format t "Windows cert store: ~A~%" pure-tls:*use-windows-certificate-store*)' \
-            --eval '(unless (pure-tls/test:run-network-tests) (uiop:quit 1))'
+            --eval '(format t "Windows cert store: ~A~%" boomer:*use-windows-certificate-store*)' \
+            --eval '(unless (boomer/test:run-network-tests) (uiop:quit 1))'
 
       # Windows network tests disabled - CRL fetching causes timeouts
 
@@ -174,7 +174,7 @@ jobs:
       - name: Setup ASDF
         run: |
           mkdir -p ~/.config/common-lisp/source-registry.conf.d/
-          echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/pure-tls.conf
+          echo '(:tree "'"$PWD"'")' > ~/.config/common-lisp/source-registry.conf.d/boomer.conf
 
       - name: Build BoringSSL test shim
         run: |

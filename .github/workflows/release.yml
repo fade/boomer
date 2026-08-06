@@ -23,6 +23,6 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
-          name: pure-tls ${{ github.ref_name }}
+          name: boomer ${{ github.ref_name }}
           bodyFile: docs/release-notes/RELEASE-NOTES-${{ steps.get_version.outputs.version }}.md
           allowUpdates: true

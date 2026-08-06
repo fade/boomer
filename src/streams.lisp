@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements TLS streams using Gray streams.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; TLS Stream Class
 

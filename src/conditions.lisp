@@ -1,10 +1,10 @@
-;;; conditions.lisp --- Error conditions for pure-tls
+;;; conditions.lisp --- Error conditions for boomer
 ;;;
 ;;; SPDX-License-Identifier: MIT
 ;;;
 ;;; Copyright (C) 2026 Anthony Green <green@moxielogic.com>
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Base Condition
 

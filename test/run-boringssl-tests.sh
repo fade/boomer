@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run BoringSSL TLS 1.3 tests against pure-tls
+# Run BoringSSL TLS 1.3 tests against boomer
 #
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Anthony Green <green@moxielogic.com>

@@ -4,11 +4,11 @@
 
 (require :asdf)
 
-;; Load pure-tls from parent directory
-(let ((pure-tls-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
-  (push pure-tls-dir asdf:*central-registry*))
+;; Load boomer from parent directory
+(let ((boomer-dir (make-pathname :directory (butlast (pathname-directory *load-truename*) 2))))
+  (push boomer-dir asdf:*central-registry*))
 
-(asdf:load-system :pure-tls)
+(asdf:load-system :boomer)
 (require :usocket)
 
 (defpackage #:anvil-client
@@ -23,14 +23,14 @@
       (let* ((socket (usocket:socket-connect host port :element-type '(unsigned-byte 8)))
              (stream (usocket:socket-stream socket)))
         (unwind-protect
-             (let ((tls-stream (pure-tls:make-tls-client-stream
+             (let ((tls-stream (boomer:make-tls-client-stream
                                 stream
                                 :hostname host
                                 :verify nil)))  ; Don't verify for testing
                (unwind-protect
                     (progn
                       ;; Send some data
-                      (write-sequence (babel:string-to-octets "hello from pure-tls") tls-stream)
+                      (write-sequence (babel:string-to-octets "hello from boomer") tls-stream)
                       (force-output tls-stream)
                       ;; Try to read response (with timeout)
                       (let ((buf (make-array 1024 :element-type '(unsigned-byte 8))))

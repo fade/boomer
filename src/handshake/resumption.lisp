@@ -7,7 +7,7 @@
 ;;; Implements TLS 1.3 session resumption using Pre-Shared Keys (PSK)
 ;;; derived from NewSessionTicket messages.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; Session Ticket Structure
 ;;;

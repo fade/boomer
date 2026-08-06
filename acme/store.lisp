@@ -6,7 +6,7 @@
 ;;;
 ;;; Certificate and account key storage with proper directory layout.
 
-(in-package #:pure-tls/acme)
+(in-package #:boomer/acme)
 
 ;;; ----------------------------------------------------------------------------
 ;;; Platform-specific paths
@@ -161,9 +161,9 @@
      privateKey OCTET STRING,
      parameters [0] ECParameters OPTIONAL,
      publicKey [1] BIT STRING OPTIONAL }"
-  (let* ((root (pure-tls::parse-der der))
-         (children (pure-tls::asn1-children root))
-         (private-key-bytes (pure-tls::asn1-node-value (second children))))
+  (let* ((root (boomer::parse-der der))
+         (children (boomer::asn1-children root))
+         (private-key-bytes (boomer::asn1-node-value (second children))))
     ;; Convert private key bytes to ironclad key
     (ironclad:make-private-key :secp256r1 :x private-key-bytes)))
 
@@ -216,7 +216,7 @@
    Returns list of x509-certificate objects."
   (let ((cert-path (store-domain-cert-path store domain)))
     (when (probe-file cert-path)
-      (pure-tls:load-certificate-chain (namestring cert-path)))))
+      (boomer:load-certificate-chain (namestring cert-path)))))
 
 (defun store-certificate-expires-soon-p (store domain &optional (days 30))
   "Check if domain's certificate expires within DAYS days."

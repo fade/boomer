@@ -19,11 +19,11 @@ mvn exec:java -pl TLS-Testsuite \
 ### Initial Test Results
 With `-tls13Only` flag, tests run immediately without scanner timeout:
 - TLS 1.2 tests: Automatically skipped ("ProtocolVersion not supported by target")
-- TLS 1.3 tests: Running against pure-tls
+- TLS 1.3 tests: Running against boomer
 
 **Sample results from initial run:**
 - `KeyUpdate.sendUnknownRequestMode`: 5/9 passed, 4/9 failed
-  - Failures: "Expected fatal alert but received NEW_SESSION_TICKET" (pure-tls doesn't reject unknown KeyUpdate request modes with alert)
+  - Failures: "Expected fatal alert but received NEW_SESSION_TICKET" (boomer doesn't reject unknown KeyUpdate request modes with alert)
 
 ---
 
@@ -116,7 +116,7 @@ The following RFC compliance issues were fixed:
 ## Remaining Failure Categories
 
 ### Not Implemented (Expected)
-- TLS 1.2 tests (~35% of suite) - pure-tls is TLS 1.3 only
+- TLS 1.2 tests (~35% of suite) - boomer is TLS 1.3 only
 - ALPS (Application-Level Protocol Settings) - draft extension
 - Certificate callbacks - FailCertCallback-* tests
 - Peek functionality - Peek-* tests

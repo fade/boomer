@@ -4,9 +4,9 @@
 (setf *compile-verbose* nil *compile-print* nil)
 (push #p"/home/green/git/pure-tls/" asdf:*central-registry*)
 (handler-bind ((warning (function muffle-warning)))
-  (asdf:load-system :pure-tls/acme))
+  (asdf:load-system :boomer/acme))
 
-(in-package :pure-tls/acme)
+(in-package :boomer/acme)
 
 (format t "~%=== JWS Signature Investigation ===~%~%")
 

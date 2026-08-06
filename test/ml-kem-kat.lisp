@@ -8,7 +8,7 @@
 ;;;        -o test/vectors/kat_MLKEM_768.rsp
 ;;;
 ;;; Usage:
-;;;   (asdf:load-system :pure-tls)
+;;;   (asdf:load-system :boomer)
 ;;;   (load "test/ml-kem-kat.lisp")
 ;;;   (ml-kem-kat:run-tests)
 
@@ -80,7 +80,7 @@ Returns T if test passes, NIL otherwise."
     (when verbose
       (format t "~&Test ~D: Decapsulation... " count))
     (handler-case
-        (let ((computed-ss (pure-tls::ml-kem-768-decaps sk ct)))
+        (let ((computed-ss (boomer::ml-kem-768-decaps sk ct)))
           (if (equalp computed-ss expected-ss)
               (progn
                 (when verbose (format t "PASS~%"))
@@ -113,7 +113,7 @@ Returns T if test passes, NIL otherwise."
       (when verbose
         (format t "~&Test ~D: Implicit rejection... " count))
       (handler-case
-          (let ((computed-ss-n (pure-tls::ml-kem-768-decaps sk ct-n)))
+          (let ((computed-ss-n (boomer::ml-kem-768-decaps sk ct-n)))
             (if (equalp computed-ss-n expected-ss-n)
                 (progn
                   (when verbose (format t "PASS~%"))
@@ -135,7 +135,7 @@ Returns T if test passes, NIL otherwise."
 MAX-COUNT limits number of test vectors (default 100).
 Returns T if all tests pass."
   (let* ((kat-file (merge-pathnames "test/vectors/kat_MLKEM_768.rsp"
-                                    (asdf:system-source-directory :pure-tls)))
+                                    (asdf:system-source-directory :boomer)))
          (vectors (parse-kat-file kat-file max-count))
          (total (length vectors))
          (decaps-pass 0)

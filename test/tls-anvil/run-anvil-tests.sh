@@ -1,20 +1,20 @@
 #!/bin/bash
-# Run TLS-Anvil tests against pure-tls
+# Run TLS-Anvil tests against boomer
 #
 # Usage:
-#   ./run-anvil-tests.sh server   # Test pure-tls as a TLS server
-#   ./run-anvil-tests.sh client   # Test pure-tls as a TLS client
+#   ./run-anvil-tests.sh server   # Test boomer as a TLS server
+#   ./run-anvil-tests.sh client   # Test boomer as a TLS client
 #
 # Prerequisites:
 #   - podman installed
 #   - SBCL with quicklisp/ocicl
-#   - pure-tls dependencies installed (run 'make load' first)
+#   - boomer dependencies installed (run 'make load' first)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PURE_TLS_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
-RESULTS_DIR="${PURE_TLS_DIR}/test/tls-anvil/results"
+BOOMER_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+RESULTS_DIR="${BOOMER_DIR}/test/tls-anvil/results"
 PORT=4433
 STRENGTH="${STRENGTH:-1}"  # Test strength (1=quick, 2=default, higher=more thorough)
 
@@ -25,7 +25,7 @@ mkdir -p "$RESULTS_DIR"
 
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
-        echo "Stopping pure-tls server (PID $SERVER_PID)..."
+        echo "Stopping boomer server (PID $SERVER_PID)..."
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
@@ -34,15 +34,15 @@ trap cleanup EXIT
 
 case "${1:-server}" in
     server)
-        echo "=== Testing pure-tls SERVER with TLS-Anvil ==="
-        echo "Starting pure-tls server on port $PORT..."
+        echo "=== Testing boomer SERVER with TLS-Anvil ==="
+        echo "Starting boomer server on port $PORT..."
 
-        # Start pure-tls server in background
-        cd "$PURE_TLS_DIR"
+        # Start boomer server in background
+        cd "$BOOMER_DIR"
         sbcl --noinform --non-interactive \
             --eval '(require :asdf)' \
-            --eval "(push #p\"$PURE_TLS_DIR/\" asdf:*central-registry*)" \
-            --eval '(asdf:load-system :pure-tls)' \
+            --eval "(push #p\"$BOOMER_DIR/\" asdf:*central-registry*)" \
+            --eval '(asdf:load-system :boomer)' \
             --load "$SCRIPT_DIR/anvil-server.lisp" &
         SERVER_PID=$!
 
@@ -69,7 +69,7 @@ case "${1:-server}" in
         ;;
 
     client)
-        echo "=== Testing pure-tls CLIENT with TLS-Anvil ==="
+        echo "=== Testing boomer CLIENT with TLS-Anvil ==="
         echo ""
         echo "NOTE: Client testing requires the trigger script to run on the host."
         echo "This is complex because TLS-Anvil runs in a container."
@@ -84,8 +84,8 @@ case "${1:-server}" in
         echo "Usage: $0 [server|client]"
         echo ""
         echo "Commands:"
-        echo "  server  - Test pure-tls as a TLS server (TLS-Anvil connects to us)"
-        echo "  client  - Test pure-tls as a TLS client (we connect to TLS-Anvil)"
+        echo "  server  - Test boomer as a TLS server (TLS-Anvil connects to us)"
+        echo "  client  - Test boomer as a TLS client (we connect to TLS-Anvil)"
         echo ""
         echo "Environment variables:"
         echo "  STRENGTH - Test strength (1=quick, 2=default, higher=more thorough)"

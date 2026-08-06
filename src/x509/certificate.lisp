@@ -6,7 +6,7 @@
 ;;;
 ;;; Implements X.509 certificate parsing using the ASN.1 parser.
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; X.509 Certificate Structure
 ;;;

@@ -11,7 +11,7 @@
 ;;; - FIPS 204: Module-Lattice-Based Digital Signature Standard
 ;;; - draft-ietf-tls-mldsa: Use of ML-DSA in TLS 1.3
 
-(in-package #:pure-tls)
+(in-package #:boomer)
 
 ;;;; =========================================================================
 ;;;; ML-DSA Parameters (FIPS 204)

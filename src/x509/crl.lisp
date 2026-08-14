@@ -414,11 +414,11 @@ Distinct from MAKE-ECDSA-PUBLIC-KEY in handshake/client.lisp, which takes a curv
                                            "Host: " host crlf
                                            "Connection: close" crlf
                                            "Accept: */*" crlf
-                                           ;; Bare product token, deliberately carrying no
-                                           ;; version: a CRL endpoint is an arbitrary third
-                                           ;; party, and a version here would both leak the
-                                           ;; release under attack and drift from the system
-                                           ;; version the moment it moves.
+                                           ;; No version, on purpose: a CRL distribution
+                                           ;; point is an arbitrary third party contacted
+                                           ;; during certificate validation, and naming
+                                           ;; our build to it buys nothing. A literal here
+                                           ;; would drift from what the systems declare.
                                            "User-Agent: boomer" crlf
                                            crlf)))
                 (write-sequence (flexi-streams:string-to-octets request :external-format :latin-1)

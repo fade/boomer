@@ -414,7 +414,12 @@ Distinct from MAKE-ECDSA-PUBLIC-KEY in handshake/client.lisp, which takes a curv
                                            "Host: " host crlf
                                            "Connection: close" crlf
                                            "Accept: */*" crlf
-                                           "User-Agent: pure-tls/1.0" crlf
+                                           ;; Bare product token, deliberately carrying no
+                                           ;; version: a CRL endpoint is an arbitrary third
+                                           ;; party, and a version here would both leak the
+                                           ;; release under attack and drift from the system
+                                           ;; version the moment it moves.
+                                           "User-Agent: boomer" crlf
                                            crlf)))
                 (write-sequence (flexi-streams:string-to-octets request :external-format :latin-1)
                                 stream)

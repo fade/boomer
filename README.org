@@ -1005,7 +1005,7 @@ This project also includes test certificates from Google's [[https://github.com/
 These files are used under the Apache License 2.0. Copyright (c) Google Inc.
 
 ** License
-MIT License
+MIT License. The full text is in [[file:LICENSE][LICENSE]].
 
 Copyright (c) 2026 Anthony Green [[mailto:green@moxielogic.com][green@moxielogic.com]]
 

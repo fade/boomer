@@ -1,0 +1,1025 @@
+#+options: toc:nil num:nil
+
+* boomer
+A pure Common Lisp implementation of TLS 1.3 (RFC 8446).
+
+boomer is a fork of [[https://github.com/atgreen/pure-tls][pure-tls]] by Anthony
+Green. The protocol implementation, the ACME client and most of what is
+described below originate there, and the copyright and MIT license are
+unchanged.
+
+The fork has diverged from upstream: it adds an opt-in strict-privacy hostname
+policy and a resumable record layer, among other changes, so behavior here is
+not identical to pure-tls. It is maintained independently, and is not affiliated
+with or endorsed by the upstream project. Upstream releases and history live at
+the link above, and fixes of general value are sent there as well.
+
+** Quick Start
+*** Server
+HTTPS server with automatic Let's Encrypt certificates:
+
+#+begin_src lisp
+(asdf:load-system :boomer/acme+hunchentoot)
+
+(hunchentoot:start
+  (boomer/acme:make-acme-acceptor "example.com" "admin@example.com"))
+#+end_src
+
+The server obtains a certificate on first start and renews it automatically.
+
+*** Client
+Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
+
+#+begin_src lisp
+(asdf:load-system :boomer/cl+ssl-compat)
+(asdf:register-immutable-system "cl+ssl")
+(asdf:load-system :drakma)
+
+(drakma:http-request "https://example.com/")
+#+end_src
+
+** Features
+- *Pure Common Lisp* - No foreign libraries or OpenSSL dependency
+- *TLS 1.3 only* - Modern, secure protocol with simplified handshake
+- *Post-quantum ready* - X25519MLKEM768 hybrid key exchange (FIPS 203)
+- *Encrypted Client Hello (ECH)* - Encrypts SNI to protect privacy (RFC 9639)
+- *Timeouts & cancellation* - Integrated with [[https://github.com/atgreen/cl-cancel][=cl-cancel=]] for cooperative cancellation
+- *Automatic certificates* - Built-in ACME client for Let's Encrypt
+- *Gray streams* - Seamless integration with existing I/O code
+- *cl+ssl compatible* - Drop-in replacement API available
+- *Native trust store* - Uses Windows CryptoAPI and macOS Security.framework
+
+*** Supported Cipher Suites
+- =TLS_CHACHA20_POLY1305_SHA256= (0x1303) - Preferred for side-channel resistance
+- =TLS_AES_256_GCM_SHA384= (0x1302)
+- =TLS_AES_128_GCM_SHA256= (0x1301)
+
+*** Supported Key Exchange
+- *X25519MLKEM768* (hybrid post-quantum) - Combines X25519 with ML-KEM-768 (FIPS 203)
+- X25519 (Curve25519)
+- secp256r1 (P-256)
+- secp384r1 (P-384)
+
+*** Supported Signature Algorithms
+- *Ed25519* - Edwards curve digital signature (fast, compact)
+- *Ed448* - Edwards curve digital signature (higher security, 224-bit)
+- RSA-PSS (SHA-256, SHA-384, SHA-512)
+- ECDSA with P-256 (SHA-256)
+- ECDSA with P-384 (SHA-384)
+
+*** Certificate Revocation
+- *CRL Support* - Checks Certificate Revocation Lists (RFC 5280)
+- Parses CRL Distribution Points extension from certificates
+- Built-in HTTP client fetches CRLs (no external dependencies)
+- *CRL signature verification* - Validates CRL authenticity using issuer's public key
+- Honors =HTTP_PROXY= environment variable
+- Thread-safe caching of fetched CRLs
+- Optional revocation checking during certificate verification
+
+#+begin_src lisp
+;; Enable CRL/OCSP checking during verification
+(boomer::verify-certificate-chain chain roots now hostname
+                                    :check-revocation t)
+
+;; Check a single certificate
+(boomer::check-certificate-revocation cert)
+;; Returns :valid, :revoked, :unknown, or :error
+#+end_src
+
+** Installation
+Using [[https://github.com/ocicl/ocicl][ocicl]]:
+
+#+begin_src sh
+ocicl install boomer
+#+end_src
+
+Or add to your ASDF system:
+
+#+begin_src lisp
+:depends-on (#:boomer)
+#+end_src
+
+** Usage
+*** HTTPS Client
+#+begin_src lisp
+(let ((socket (usocket:socket-connect "example.com" 443
+                                       :element-type '(unsigned-byte 8))))
+  (boomer:with-tls-client-stream (tls (usocket:socket-stream socket)
+                                        :hostname "example.com")
+    ;; Send HTTP request
+    (write-sequence (flexi-streams:string-to-octets
+                      "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n"
+                      :external-format :utf-8)
+                    tls)
+    (force-output tls)
+    ;; Read response
+    (loop for byte = (read-byte tls nil nil)
+          while byte
+          do (write-char (code-char byte)))))
+;; Stream automatically closed
+#+end_src
+
+*** With Certificate Verification
+#+begin_src lisp
+(boomer:with-tls-client-stream (tls socket
+                                      :hostname "example.com"
+                                      :verify boomer:+verify-peer+)
+  (do-something-with tls))
+#+end_src
+
+*** ALPN Protocol Negotiation
+#+begin_src lisp
+(boomer:with-tls-client-stream (tls socket
+                                      :hostname "example.com"
+                                      :alpn-protocols '("h2" "http/1.1"))
+  (format t "Selected protocol: ~A~%" (boomer:tls-selected-alpn tls)))
+#+end_src
+
+*** Timeouts and Cancellation
+Control operation timeouts and cancel in-flight operations using [[https://github.com/atgreen/cl-cancel][=cl-cancel=]]. Cancellation contexts propagate automatically via =*current-cancel-context*= --- no explicit parameter passing required.
+
+*Basic timeout:*
+
+#+begin_src lisp
+;; Timeout entire TLS operation (handshake + I/O) after 30 seconds
+(cl-cancel:with-timeout-context (_ 30)
+  (let ((socket (usocket:socket-connect "slow-server.com" 443
+                                         :element-type '(unsigned-byte 8))))
+    (boomer:with-tls-client-stream (tls (usocket:socket-stream socket)
+                                          :hostname "slow-server.com")
+      ;; Both handshake and reads respect the 30s deadline
+      (read-line tls))))
+;; Raises boomer:tls-deadline-exceeded if timeout is exceeded
+#+end_src
+
+*User cancellation:*
+
+#+begin_src lisp
+;; Cooperative cancellation - checked at I/O boundaries
+(multiple-value-bind (cancel-ctx cancel-fn)
+    (cl-cancel:with-cancel (cl-cancel:background))
+  (bt2:make-thread
+    (lambda ()
+      (let ((cl-cancel:*current-cancel-context* cancel-ctx))
+        (boomer:make-tls-client-stream socket :hostname "example.com"))))
+  ;; Later, when user clicks "Cancel":
+  (funcall cancel-fn))  ; Interrupts at next blocking operation
+;; Raises boomer:tls-context-cancelled at next check point
+#+end_src
+
+*Composable deadlines:*
+
+#+begin_src lisp
+;; Parent deadline automatically propagates to all operations
+(cl-cancel:with-timeout-context (_ 60)
+  (boomer:with-tls-client-stream (tls socket :hostname "example.com")
+    (write-http-request tls)
+    (read-http-response tls)))  ; All I/O shares same 60s budget
+#+end_src
+
+*cl+ssl compatibility layer:*
+
+#+begin_src lisp
+;; Works seamlessly with cl+ssl API
+(cl-cancel:with-timeout-context (_ 30)
+  (cl+ssl:with-global-context ((cl+ssl:make-context))
+    (cl+ssl:make-ssl-client-stream socket :hostname "example.com")))
+#+end_src
+
+*Benefits:*
+
+- *Bounded operations* - Timeouts checked at I/O boundaries
+- *Responsive UIs* - Cancel between operations
+- *DoS protection* - Enforce per-connection time limits
+- *Better testing* - Deterministic timeout behavior
+
+*Timeout behavior (cooperative checking):*
+
+- Checks occur /before/ each blocking read, not during
+- Existing blocking reads complete before timeout is detected
+- Effective for slow servers (long waits between messages)
+- Not effective for slow reads (partial data trickling in)
+
+*When timeout checks occur:*
+
+- Before each TLS record read
+- Between handshake state transitions
+- Before stream read operations
+- Currently NOT implemented for CRL fetching
+
+*** TLS Server
+#+begin_src lisp
+(let ((server (usocket:socket-listen "0.0.0.0" 8443)))
+  (loop
+    (let ((client (usocket:socket-accept server :element-type '(unsigned-byte 8))))
+      (boomer:with-tls-server-stream (tls (usocket:socket-stream client)
+                                            :certificate "/path/to/cert.pem"
+                                            :key "/path/to/key.pem")
+        (handle-request tls)))))
+#+end_src
+
+*** Server with Client Certificate Authentication (mTLS)
+#+begin_src lisp
+(boomer:make-tls-server-stream stream
+  :certificate "/path/to/server-cert.pem"
+  :key "/path/to/server-key.pem"
+  :verify boomer:+verify-required+)  ; Require client certificate
+#+end_src
+
+*** Server with SNI Callback (Virtual Hosting)
+#+begin_src lisp
+(defun my-sni-callback (hostname)
+  "Return certificate and key based on client-requested hostname.
+   Return :reject to send an unrecognized_name alert and abort the handshake."
+  (cond
+    ((string= hostname "site-a.example.com")
+     (values (boomer:load-certificate-chain "/certs/site-a.pem")
+             (boomer:load-private-key "/certs/site-a-key.pem")))
+    ((string= hostname "site-b.example.com")
+     (values (boomer:load-certificate-chain "/certs/site-b.pem")
+             (boomer:load-private-key "/certs/site-b-key.pem")))
+    ((string= hostname "blocked.example.com")
+     :reject)  ; Reject unknown/blocked hostnames with unrecognized_name alert
+    (t nil)))  ; Use default certificate
+
+(boomer:make-tls-server-stream stream
+  :certificate "/path/to/default-cert.pem"
+  :key "/path/to/default-key.pem"
+  :sni-callback #'my-sni-callback)
+#+end_src
+
+*** Using the cl+ssl Compatibility Layer
+The =boomer/cl+ssl-compat= system provides a drop-in replacement for cl+ssl,
+allowing existing code using cl+ssl to work with boomer without modification.
+
+#+begin_src lisp
+(asdf:load-system :boomer/cl+ssl-compat)
+
+;; Use familiar cl+ssl API
+(cl+ssl:make-ssl-client-stream stream
+  :hostname "example.com"
+  :verify :optional)
+#+end_src
+
+The compatibility layer supports:
+
+- =cl+ssl:make-ssl-client-stream= / =cl+ssl:make-ssl-server-stream=
+- =cl+ssl:make-context= / =cl+ssl:with-global-context= / =cl+ssl:call-with-global-context=
+- =cl+ssl:stream-fd= (converts file descriptors back to streams)
+- Certificate functions and verification constants
+
+*** Replacing cl+ssl in Existing Applications
+To use boomer instead of cl+ssl in an application that depends on libraries
+requiring cl+ssl (such as drakma), use =asdf:register-immutable-system= to
+prevent ASDF from loading the real cl+ssl:
+
+#+begin_src lisp
+;;; In your .asd file, before the defsystem:
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  ;; Load boomer compatibility layer first
+  (asdf:load-system :boomer/cl+ssl-compat)
+  ;; Tell ASDF that "cl+ssl" is already satisfied - never load the real one
+  (asdf:register-immutable-system "cl+ssl"))
+
+(asdf:defsystem "my-application"
+  :depends-on (:drakma ...)  ; drakma depends on cl+ssl, but won't load it
+  ...)
+#+end_src
+
+This technique:
+
+1. Loads the boomer compatibility layer, which defines the =CL+SSL= package
+2. Registers "cl+ssl" as an immutable system, so ASDF treats it as already loaded
+3. When drakma (or any library) requests =:cl+ssl=, ASDF skips loading it
+
+This allows you to eliminate OpenSSL as a dependency entirely, making your
+application fully portable pure Common Lisp for TLS.
+
+** ACME Client (Let's Encrypt)
+The =boomer/acme= system provides automatic certificate management using the ACME protocol (RFC 8555), compatible with Let's Encrypt and other ACME-compliant certificate authorities.
+
+*** Multi-Domain Certificates
+#+begin_src lisp
+(boomer/acme:make-acme-acceptor
+  '("example.com" "www.example.com" "api.example.com")
+  "admin@example.com"
+  :renewal-days 30)
+#+end_src
+
+*** Certificate Profiles
+boomer supports [[https://letsencrypt.org/docs/profiles/][Let's Encrypt certificate profiles]], defaulting to =tlsserver= for modern, lean certificates optimized for TLS 1.3:
+
+#+begin_src lisp
+;; Default: tlsserver profile (recommended for boomer)
+(boomer/acme:make-acme-acceptor "example.com" "admin@example.com")
+
+;; Short-lived certificates (~6 days, no revocation info)
+(boomer/acme:make-acme-acceptor "example.com" "admin@example.com"
+  :profile "shortlived")
+
+;; Classic 90-day certificates with longer validation windows
+(boomer/acme:make-acme-acceptor "example.com" "admin@example.com"
+  :profile "classic")
+#+end_src
+
+| Profile      | Validity | Auth Reuse | Max Domains | Notes                                            |
+|--------------+----------+------------+-------------+--------------------------------------------------|
+| =tlsserver=  | 90 days  | 7 hours    | 25          | Default. Smaller certs, removes legacy fields    |
+| =shortlived= | ~6 days  | 7 hours    | 25          | No CRL/OCSP needed. Requires reliable automation |
+| =classic=    | 90 days  | 30 days    | 100         | Let's Encrypt default. Larger certs              |
+
+To change the global default:
+
+#+begin_src lisp
+(setf boomer/acme:*default-profile* "shortlived")
+#+end_src
+
+*** ACME Systems
+The ACME functionality is split into two systems:
+
+- *=boomer/acme=* - Core ACME client (no web server dependency)
+- *=boomer/acme+hunchentoot=* - Hunchentoot integration with =acme-acceptor=
+
+Use =boomer/acme= directly if you're using a different web server.
+
+*** Non-Hunchentoot Usage
+For other web servers, use the ACME client directly with the =:certificate-provider= callback:
+
+#+begin_src lisp
+(asdf:load-system :boomer/acme)
+
+;; Create store and client
+(defvar *store* (boomer/acme:make-cert-store))
+(defvar *client* (boomer/acme:make-acme-client
+                   :directory-url boomer/acme:*production-url*
+                   :store *store*))
+
+;; Thread-safe validation state for challenges
+(defvar *validation-lock* (bt:make-lock "validation"))
+(defvar *validation-cert* nil)
+(defvar *validation-key* nil)
+
+;; Certificate provider for your TLS server
+(defun my-certificate-provider (hostname alpn-list)
+  (when (member "acme-tls/1" alpn-list :test #'string=)
+    (bt:with-lock-held (*validation-lock*)
+      (when (and *validation-cert* *validation-key*)
+        (values (list *validation-cert*) *validation-key* "acme-tls/1")))))
+
+;; Use with boomer server streams
+(boomer:make-tls-server-stream stream
+  :certificate "/path/to/cert.pem"
+  :key "/path/to/key.pem"
+  :certificate-provider #'my-certificate-provider)
+#+end_src
+
+*** Certificate Storage
+Certificates are stored in platform-appropriate locations:
+
+| Platform | Default Path                              |
+|----------+-------------------------------------------|
+| Linux    | =~/.local/state/pure-tls/=                |
+| macOS    | =~/Library/Application Support/pure-tls/= |
+| Windows  | =%LOCALAPPDATA%\pure-tls\=                |
+
+These paths contain =pure-tls= because that is what the code writes today,
+inherited from upstream. They are deliberately left alone: changing them would
+hide certificates that existing installations have already written. They will
+only change alongside a migration that moves an existing store to the new path.
+
+To use a custom location:
+
+#+begin_src lisp
+(boomer/acme:make-cert-store :base-path #p"/etc/ssl/acme/")
+#+end_src
+
+*** TLS-ALPN-01 Challenge
+boomer/acme uses the TLS-ALPN-01 challenge type, which validates domain ownership by serving a special self-signed certificate on port 443. This is ideal for:
+
+- Servers that already run on port 443 (challenges handled inline)
+- Environments where HTTP port 80 is not available
+- Automatic renewal without service interruption
+
+*Requirements:*
+
+- Port 443 must be accessible from the internet
+- The domain must resolve to your server's IP address
+
+*** Configuration Options
+#+begin_src lisp
+(boomer/acme:make-acme-acceptor domains email
+  :port 443              ; HTTPS port (default 443)
+  :production t          ; Use Let's Encrypt production (default T)
+  :profile "tlsserver"   ; Certificate profile (default "tlsserver")
+  :renewal-days 30       ; Renew when cert expires within N days
+  :store store           ; Custom cert-store (optional)
+  :logger #'my-logger)   ; Custom logging function (optional)
+#+end_src
+
+*** Transient Error Recovery
+The ACME client automatically recovers from transient CA responses:
+=badNonce= rejections (RFC 8555 §6.5) are retried with a fresh nonce, and
+rate-limited (=429=/=rateLimited=) or not-ready (=202=) responses are
+retried after the server's =Retry-After= delay. Recovery is bounded by
+both a retry count and a total-wait ceiling, so it never loops forever.
+Each client function establishes sensible defaults on its own; a driver
+running a whole issuance can place one policy around the region instead:
+
+#+begin_src lisp
+(boomer/acme:with-acme-retries (:max-nonce-retries 3
+                                  :max-retry-after-attempts 10
+                                  :max-total-wait 120)
+  ;; create order, complete challenges, finalize, download certificate
+  ...)
+#+end_src
+
+Recoverable responses are signaled as typed conditions ---
+=acme-http-error= and its subtypes =acme-bad-nonce=, =acme-rate-limited=,
+and =acme-not-ready= --- with a =retry= restart, so custom handlers can
+implement their own policy via the standard condition system. When the
+retry budget is exhausted, the condition propagates (or the terminal
+response is returned as-is), never a silent failure.
+
+*** Debugging
+Enable debug logging:
+
+#+begin_src lisp
+(setf boomer/acme:*acme-debug* t)
+#+end_src
+
+*** Testing with Pebble
+For local development, use [[https://github.com/letsencrypt/pebble][Pebble]], a small ACME test server:
+
+#+begin_src sh
+# Start Pebble (requires podman or docker)
+cd test/acme
+./run-pebble.sh start
+
+# Run tests
+sbcl --load quick-pebble-test.lisp
+
+# Stop Pebble
+./run-pebble.sh stop
+#+end_src
+
+** API Reference
+*** Stream Creation
+**** =with-tls-client-stream= ((var stream &rest args) &body body)
+Execute BODY with VAR bound to a TLS client stream. The stream is automatically closed when BODY exits (normally or via non-local exit).
+
+#+begin_src lisp
+(boomer:with-tls-client-stream (tls socket :hostname "example.com")
+  (write-sequence data tls)
+  (force-output tls)
+  (read-sequence buffer tls))
+;; tls is automatically closed here
+#+end_src
+
+**** =with-tls-server-stream= ((var stream &rest args) &body body)
+Execute BODY with VAR bound to a TLS server stream. The stream is automatically closed when BODY exits.
+
+**** =make-tls-client-stream= (socket &key hostname sni-hostname context verify alpn-protocols ech-configs ech-enabled close-callback external-format buffer-size)
+Create a TLS client stream over a TCP socket.
+
+- =socket= - The underlying TCP stream
+- =hostname= - Server hostname for SNI and certificate verification
+- =sni-hostname= - Override hostname for SNI only (no certificate hostname verification)
+- =context= - TLS context for configuration (optional)
+- =verify= - Certificate verification mode: =+verify-none+=, =+verify-peer+=, or =+verify-required+=
+- =alpn-protocols= - List of ALPN protocol names to offer
+- =ech-configs= - ECH configurations for Encrypted Client Hello (from DNS HTTPS record or manual)
+- =ech-enabled= - Whether to use ECH when configs are available (default T)
+- =close-callback= - Function called when stream is closed
+- =external-format= - If specified, wrap in a flexi-stream for character I/O
+- =buffer-size= - Size of I/O buffers (default 16384)
+
+**** =make-tls-server-stream= (socket &key context certificate key verify alpn-protocols sni-callback close-callback external-format buffer-size)
+Create a TLS server stream over a TCP socket.
+
+- =socket= - The underlying TCP stream
+- =context= - TLS context for configuration (optional)
+- =certificate= - Certificate chain (list of certificates or path to PEM file)
+- =key= - Private key (Ironclad key object or path to PEM file)
+- =verify= - Client certificate verification mode: =+verify-none+=, =+verify-peer+=, or =+verify-required+=
+- =alpn-protocols= - List of ALPN protocol names the server supports
+- =sni-callback= - Function called with client's requested hostname, returns (VALUES cert-chain private-key), NIL to use defaults, or :REJECT to abort with unrecognized_name alert
+- =close-callback= - Function called when stream is closed
+- =external-format= - If specified, wrap in a flexi-stream for character I/O
+- =buffer-size= - Size of I/O buffers (default 16384)
+
+*** Stream Accessors
+- =(tls-peer-certificate stream)= - Returns the peer's X.509 certificate
+- =(tls-peer-certificate-chain stream)= - Returns the peer's full certificate chain
+- =(tls-selected-alpn stream)= - Returns the negotiated ALPN protocol
+- =(tls-cipher-suite stream)= - Returns the negotiated cipher suite
+- =(tls-version stream)= - Returns the TLS version (always 1.3)
+- =(tls-client-hostname stream)= - Returns the client's SNI hostname (server-side only)
+- =(tls-ech-accepted-p stream)= - Returns T if ECH was used and accepted (client-side only)
+- =(tls-request-key-update stream &key request-peer-update)= - Request a TLS 1.3 key update
+
+*** Context Management
+**** =make-tls-context= (&key verify-mode verify-depth certificate-chain-file private-key-file ca-file ca-directory cipher-suites alpn-protocols auto-load-system-ca hostname-policy)
+Create a reusable TLS context for configuration.
+
+- =verify-mode= - One of the verification modes below (default =+verify-required+=)
+- =verify-depth= - Maximum certificate chain depth (default 100)
+- =certificate-chain-file= / =private-key-file= - PEM files for the local certificate and key (for servers)
+- =ca-file= / =ca-directory= - Trusted CA certificates; when neither is given and verification is enabled, the system trust store is loaded automatically (disable with =:auto-load-system-ca nil=)
+- =cipher-suites= - List of allowed cipher suites
+- =alpn-protocols= - List of ALPN protocol names
+- =hostname-policy= - RFC 6125 hostname-verification policy (see below)
+
+*** Verification Modes
+- =+verify-none+= (0) - No certificate verification
+- =+verify-peer+= (1) - Verify peer certificate if provided
+- =+verify-required+= (2) - Require and verify peer certificate
+
+*** Hostname Verification Policy
+By default boomer applies the general RFC 6125 profile: wildcard SANs
+(=*.example.com=) match per the RFC 6125 rules, and a certificate with no
+subjectAltName may fall back to its Subject Common Name (deprecated but
+still deployed). Clients that authenticate one specific server name can
+opt into a stricter profile via the context:
+
+#+begin_src lisp
+(boomer:make-tls-context
+  :verify-mode boomer:+verify-required+
+  :hostname-policy (boomer:make-hostname-policy
+                     :allow-wildcards nil      ; reject wildcard SANs
+                     :allow-cn-fallback nil))  ; reject no-SAN certificates
+#+end_src
+
+The two knobs are independent and both default to the permissive value
+(=*general-hostname-policy*=), so existing callers see no change.
+Embedded-NUL/non-LDH name rejection and IP-literal handling are
+correctness checks, not policy, and apply unconditionally.
+
+** Certificate Verification
+*** Windows
+On Windows, boomer uses the Windows CryptoAPI to validate certificates
+against the system certificate store. This is the authoritative verification
+method on Windows - there is no fallback to pure Lisp verification:
+
+- *No CA bundle needed* - Uses Windows trusted root certificates
+- *Enterprise PKI support* - Respects Group Policy certificate deployments
+- *Automatic updates* - Trust store is maintained by Windows Update
+- *Authoritative* - CryptoAPI verdict is final; if it rejects a certificate, the connection fails
+
+To disable native verification and use pure Lisp verification instead
+(requires providing CA certificates manually):
+
+#+begin_src lisp
+(setf boomer:*use-windows-certificate-store* nil)
+#+end_src
+
+*** macOS
+On macOS, boomer uses the Security.framework to validate certificates
+against the system Keychain. This is the authoritative verification
+method on macOS - there is no fallback to pure Lisp verification:
+
+- *No CA bundle needed* - Uses macOS Keychain trusted root certificates
+- *Enterprise PKI support* - Respects MDM-deployed certificates
+- *Automatic updates* - Trust store is maintained by macOS updates
+- *Authoritative* - Keychain verdict is final; if it rejects a certificate, the connection fails
+
+To disable native verification and use pure Lisp verification instead
+(requires providing CA certificates manually):
+
+#+begin_src lisp
+(setf boomer:*use-macos-keychain* nil)
+#+end_src
+
+*** Linux
+On Linux, boomer uses pure Lisp certificate verification
+and automatically searches for CA certificates:
+
+1. =SSL_CERT_FILE= environment variable
+2. =SSL_CERT_DIR= environment variable
+3. Platform-specific locations:
+   - =/etc/ssl/certs/ca-certificates.crt= (Debian/Ubuntu)
+   - =/etc/pki/tls/certs/ca-bundle.crt= (RHEL/CentOS)
+   - Homebrew OpenSSL paths
+
+If CA certificates are not found automatically:
+
+#+begin_src sh
+export SSL_CERT_FILE=/path/to/cacert.pem
+#+end_src
+
+Or download the Mozilla CA bundle from [[https://curl.se/ca/cacert.pem]]
+
+*** Custom CA Certificates
+For corporate environments or testing with custom CAs:
+
+#+begin_src lisp
+;; Use a specific CA bundle file
+(boomer:make-tls-context :ca-file "/path/to/ca-bundle.crt")
+
+;; Use a directory of certificates
+(boomer:make-tls-context :ca-directory "/path/to/certs/")
+
+;; Add corporate CA alongside system certificates
+(boomer:make-tls-context :ca-file "/path/to/corporate-ca.pem")
+
+;; Use only custom CA (skip system certificates)
+(boomer:make-tls-context
+  :ca-file "/path/to/custom-ca.pem"
+  :auto-load-system-ca nil)
+#+end_src
+
+** Side-Channel Hardening
+boomer implements several measures to mitigate side-channel attacks:
+
+*** Constant-Time Operations
+All security-sensitive comparisons (MAC verification, key comparison) use Ironclad's constant-time comparison functions to prevent timing attacks. The implementation avoids early-return patterns that could leak information about secret data.
+
+*** Uniform Error Handling
+All decryption failures produce identical error conditions (=tls-mac-error=) regardless of the failure cause, as required by RFC 8446. This prevents padding oracle attacks by ensuring attackers cannot distinguish between different types of decryption failures.
+
+*** Secret Zeroization
+Sensitive cryptographic material can be explicitly cleared from memory using the =zeroize= function or the =with-zeroized-vector= macro:
+
+#+begin_src lisp
+;; Explicit zeroization
+(let ((key (derive-key ...)))
+  (unwind-protect
+      (use-key key)
+    (boomer:zeroize key)))
+
+;; RAII-style zeroization
+(boomer:with-zeroized-vector (key (derive-key ...))
+  (use-key key))
+;; key is automatically zeroed here, even if an error occurs
+#+end_src
+
+Note: In a garbage-collected runtime, zeroization is best-effort as the GC may have already copied the data. For highest security requirements, consider foreign memory that can be mlock'd.
+
+*** TLS 1.3 Record Padding
+Record padding helps mitigate traffic analysis by hiding the true length of application data. Configure padding via =*record-padding-policy*=:
+
+#+begin_src lisp
+;; Pad all records to 256-byte boundaries
+(setf boomer:*record-padding-policy* :block-256)
+
+;; Pad to 1024-byte boundaries
+(setf boomer:*record-padding-policy* :block-1024)
+
+;; Fixed-size records (4096 bytes)
+(setf boomer:*record-padding-policy* :fixed-4096)
+
+;; Custom padding function
+(setf boomer:*record-padding-policy*
+      (lambda (plaintext-length)
+        (* 128 (ceiling plaintext-length 128))))
+
+;; No padding (default)
+(setf boomer:*record-padding-policy* nil)
+#+end_src
+
+*** Side-Channel Considerations
+- *ChaCha20-Poly1305 (Recommended)*: This cipher suite uses only ARX (add-rotate-xor) operations, which are inherently constant-time and resistant to cache-timing attacks. It is the preferred cipher suite for pure software implementations.
+- *AES-GCM*: Since Ironclad implements AES in pure Common Lisp using table lookups (rather than hardware AES-NI instructions), the AES-GCM cipher suites may be susceptible to cache-timing attacks. When possible, prefer ChaCha20-Poly1305 for better side-channel resistance.
+
+** Post-Quantum Key Exchange
+boomer supports *X25519MLKEM768*, a hybrid post-quantum key exchange that combines classical X25519 with the ML-KEM-768 lattice-based algorithm (FIPS 203). This provides defense against "harvest now, decrypt later" attacks where adversaries collect encrypted traffic today to decrypt with future quantum computers.
+
+*** How It Works
+X25519MLKEM768 performs two key exchanges in parallel:
+
+1. *X25519* - Classical elliptic curve Diffie-Hellman (128-bit security)
+2. *ML-KEM-768* - Lattice-based key encapsulation (192-bit post-quantum security)
+
+The shared secrets are concatenated, ensuring security even if one algorithm is broken.
+
+*** Automatic Negotiation
+Post-quantum key exchange is negotiated automatically when both client and server support it:
+
+#+begin_src lisp
+;; Client and server negotiate X25519MLKEM768 if both support it
+;; No configuration needed - it's the preferred key exchange
+(boomer:make-tls-client-stream stream :hostname "example.com")
+#+end_src
+
+*** Browser Compatibility
+Major browsers support X25519MLKEM768:
+
+- *Chrome 124+* - Enabled by default
+- *Firefox* - Behind flag
+- *Safari* - Not yet supported
+
+*** Testing Post-Quantum with Chrome
+A test server is included for Chrome interoperability testing:
+
+#+begin_src sh
+cd test/chrome-interop
+./generate-localhost-cert.sh  # Generate self-signed cert (once)
+sbcl --load chrome-server.lisp
+
+# Open Chrome to https://localhost:8443/
+# The page shows whether post-quantum key exchange was negotiated
+#+end_src
+
+*** FIPS 203 Compliance
+The ML-KEM-768 implementation:
+
+- Passes all 1000 NIST FIPS 203 Known Answer Test (KAT) vectors
+- Uses constant-time modular arithmetic (Barrett reduction)
+- Implements implicit rejection for CCA security
+
+To run the KAT tests:
+
+#+begin_src sh
+# Download test vectors
+curl -sL https://raw.githubusercontent.com/post-quantum-cryptography/KAT/main/MLKEM/kat_MLKEM_768.rsp \
+     -o test/vectors/kat_MLKEM_768.rsp
+
+# Run tests
+sbcl --eval '(asdf:load-system :boomer)' \
+     --load test/ml-kem-kat.lisp \
+     --eval '(ml-kem-kat:run-tests)'
+#+end_src
+
+*** Security Considerations
+- *Hybrid design* - Security relies on the stronger of X25519 or ML-KEM-768
+- *Larger key shares* - Client sends 1216 bytes, server sends 1120 bytes (vs 32 bytes for X25519 alone)
+- *Constant-time* - All secret-dependent operations use constant-time arithmetic
+- *Implicit rejection* - Invalid ciphertexts produce pseudorandom output (CCA security)
+
+** Encrypted Client Hello (ECH)
+boomer supports *Encrypted Client Hello (ECH)* per RFC 9639, which encrypts the ClientHello message including the SNI (Server Name Indication) to protect user privacy from network observers.
+
+*** How It Works
+Without ECH, the server hostname is sent in plaintext during the TLS handshake, allowing network observers to see which websites you're connecting to. ECH encrypts this information using a public key published in the server's DNS HTTPS record.
+
+1. *Client fetches ECH config* from DNS HTTPS record (caller's responsibility)
+2. *Inner ClientHello* contains the real SNI and is encrypted
+3. *Outer ClientHello* shows only the public "client-facing server" name
+4. *Server decrypts* the inner ClientHello and processes the real request
+
+*** Client Usage
+#+begin_src lisp
+;; ECH configs are typically obtained from DNS HTTPS records
+;; The caller is responsible for DNS lookup (following rustls/BoringSSL pattern)
+(let ((ech-configs (fetch-ech-configs-from-dns "example.com")))  ; Your DNS lookup
+  (boomer:make-tls-client-stream socket
+    :hostname "example.com"
+    :ech-configs ech-configs))
+
+;; Check if ECH was accepted by the server
+(boomer:tls-ech-accepted-p stream)  ; => T or NIL
+#+end_src
+
+*** Handling ECH Retry
+If the server rejects ECH (e.g., config is outdated), it may provide new configs:
+
+#+begin_src lisp
+(handler-case
+    (boomer:make-tls-client-stream socket
+      :hostname "example.com"
+      :ech-configs old-configs)
+  (boomer:tls-ech-retry-error (e)
+    ;; Server provided new configs - retry with them
+    (let ((new-configs (boomer:tls-ech-retry-error-configs e)))
+      (boomer:make-tls-client-stream new-socket
+        :hostname "example.com"
+        :ech-configs new-configs))))
+#+end_src
+
+*** Disabling ECH
+ECH is only used when configs are provided. To disable:
+
+#+begin_src lisp
+;; Simply don't provide ech-configs
+(boomer:make-tls-client-stream socket :hostname "example.com")
+
+;; Or explicitly disable even if configs are available
+(boomer:make-tls-client-stream socket
+  :hostname "example.com"
+  :ech-configs configs
+  :ech-enabled nil)
+#+end_src
+
+*** ECH Config Format
+ECH configs can be provided as:
+
+- Raw bytes (ECHConfigList from DNS)
+- Parsed =ech-config= structures
+- List of configs (first compatible one is used)
+
+#+begin_src lisp
+;; Parse raw ECHConfigList bytes
+(boomer:parse-ech-config-list raw-bytes)  ; => list of ech-config
+#+end_src
+
+*** Security Considerations
+- *Privacy protection* - Network observers cannot see the target hostname
+- *HPKE encryption* - Inner ClientHello is encrypted with X25519 + AES-128-GCM
+- *Retry handling* - Servers can provide updated configs if current ones are stale
+- *Client-side only* - Server-side ECH is not yet implemented
+
+*** Browser Compatibility
+ECH is supported by major browsers:
+
+- *Chrome 117+* - Enabled by default
+- *Firefox 118+* - Enabled by default
+- *Safari* - Not yet supported
+
+** Debugging with Wireshark
+boomer supports the NSS Key Log format via the =SSLKEYLOGFILE= environment variable. This allows you to decrypt TLS traffic in Wireshark for debugging purposes.
+
+*** Setup
+1. Set the =SSLKEYLOGFILE= environment variable to a writable file path:
+
+   #+begin_src sh
+   export SSLKEYLOGFILE=/tmp/tls-keys.log
+   #+end_src
+
+2. Start your Lisp application that uses boomer
+
+3. In Wireshark:
+
+   - Go to *Edit > Preferences > Protocols > TLS*
+   - Set *(Pre)-Master-Secret log filename* to the same path (=/tmp/tls-keys.log=)
+   - Capture traffic and Wireshark will automatically decrypt TLS 1.3 sessions
+
+*** Logged Secrets
+The following secrets are logged (compatible with Wireshark TLS 1.3 dissector):
+
+- =CLIENT_HANDSHAKE_TRAFFIC_SECRET= - Client handshake traffic key
+- =SERVER_HANDSHAKE_TRAFFIC_SECRET= - Server handshake traffic key
+- =CLIENT_TRAFFIC_SECRET_0= - Client application traffic key
+- =SERVER_TRAFFIC_SECRET_0= - Server application traffic key
+- =EXPORTER_SECRET= - Exporter master secret
+
+** Dependencies
+- [[https://github.com/sharplispers/ironclad][ironclad]] - Cryptographic primitives
+- [[https://github.com/trivial-gray-streams/trivial-gray-streams][trivial-gray-streams]] - Gray stream support
+- [[https://github.com/edicl/flexi-streams][flexi-streams]] - Character encoding (optional)
+- [[https://github.com/keithj/alexandria][alexandria]] - Utilities
+- [[https://github.com/trivial-features/trivial-features][trivial-features]] - Portable platform detection
+- [[https://github.com/cffi/cffi][cffi]] - Windows and macOS only, for native trust store bindings
+
+** Session Resumption (PSK)
+boomer supports TLS 1.3 session resumption using Pre-Shared Keys (PSK) derived from NewSessionTicket messages. This allows clients to reconnect to servers more quickly by skipping the certificate exchange.
+
+*** How It Works
+1. After a successful handshake, the server sends a NewSessionTicket message
+2. The client caches the ticket (keyed by hostname)
+3. On subsequent connections, the client offers the cached PSK
+4. If the server accepts, the handshake completes without certificate exchange
+
+*** Client Usage
+Session resumption is automatic. The client caches session tickets and offers them on subsequent connections:
+
+#+begin_src lisp
+;; First connection - full handshake
+(let ((tls (boomer:make-tls-client-stream stream :hostname "example.com")))
+  ;; ... use connection ...
+  (close tls))
+
+;; Second connection - resumed session (faster)
+(let ((tls (boomer:make-tls-client-stream stream :hostname "example.com")))
+  ;; ... uses cached PSK if available ...
+  (close tls))
+#+end_src
+
+*** Managing the Session Cache
+#+begin_src lisp
+;; Clear all cached session tickets
+(boomer:session-ticket-cache-clear)
+
+;; Clear ticket for a specific hostname
+(boomer:session-ticket-cache-clear "example.com")
+#+end_src
+
+*** Server Configuration
+For servers, session tickets are encrypted with a server-side key. You can set a persistent key for session tickets to survive server restarts:
+
+#+begin_src lisp
+;; Set a 32-byte key for ticket encryption
+;; (If not set, a random key is generated on first use)
+(setf boomer:*server-ticket-key* (boomer:random-bytes 32))
+#+end_src
+
+*** Security Considerations
+- Session tickets are encrypted with AES-256-GCM
+- Ticket lifetime is 24 hours by default
+- Only PSK with (EC)DHE key exchange is supported (provides forward secrecy)
+- PSK-only mode (without (EC)DHE) is not supported
+
+** Testing
+*** Running the Test Suite
+#+begin_src sh
+# Run all tests (unit, network, BoringSSL)
+make test
+
+# Or from Lisp:
+(asdf:load-system :boomer/test)
+(boomer/test:run-tests)          ; Offline tests
+(boomer/test:run-network-tests)  ; Network tests (requires internet)
+#+end_src
+
+*** Test Coverage
+The test suite validates:
+
+- *Cryptographic primitives*: HKDF (RFC 5869), AES-GCM, ChaCha20-Poly1305 (RFC 8439)
+- *TLS 1.3 key schedule*: RFC 8448 test vectors for all key derivation steps
+- *Record layer*: Header format, content types, AEAD nonce construction
+- *X.509 certificates*: ASN.1 parsing, hostname verification, OID handling
+- *Bundled bad certificates*: Offline tests using certificates from [[https://github.com/chromium/badssl.com][badssl.com]] (expired, self-signed, known malware CAs)
+- *X.509 validation*: Certificate validation tests from Google's [[https://github.com/google/x509test][x509test]] project (RFC 5280 compliance, X.690 DER encoding)
+- *OpenSSL test suite*: Live TLS handshake tests adapted from OpenSSL's ssl-tests (basic handshakes, ALPN, SNI, key update, curves, mTLS)
+- *BoringSSL test suite*: Protocol compliance testing via shim binary (65% pass rate; failures are TLS 1.2 tests which boomer does not implement)
+- *Live validation*: TLS 1.3 connections to major sites (Google, Cloudflare, GitHub, etc.)
+
+*** BoringSSL Test Suite
+The BoringSSL test runner provides comprehensive protocol compliance testing:
+
+#+begin_src sh
+# Build the shim binary
+make boringssl-shim
+
+# Run tests (requires BoringSSL checkout)
+export BORINGSSL_DIR=/path/to/boringssl
+make boringssl-tests
+#+end_src
+
+The shim implements the BoringSSL test protocol, allowing boomer to be tested against 6500+ test cases covering edge cases, malformed messages, and protocol violations.
+
+*** Individual Test Suites
+#+begin_src lisp
+(boomer/test:run-crypto-tests)       ; Cryptographic primitives
+(boomer/test:run-record-tests)       ; Record layer
+(boomer/test:run-handshake-tests)    ; Key schedule, extensions
+(boomer/test:run-certificate-tests)  ; X.509 parsing
+(boomer/test:run-x509test-tests)     ; X.509 validation (RFC 5280)
+(boomer/test:run-network-tests)      ; Network tests (requires internet)
+
+;; OpenSSL-adapted tests
+(fiveam:run! 'boomer/test::openssl-tests)
+#+end_src
+
+** Limitations
+*** Not Supported
+- *0-RTT early data* - Disabled for security (replay attack concerns)
+- *DTLS* - Datagram TLS (UDP-based) is not implemented
+- *Certificate compression* - RFC 8879 is not implemented
+- *Post-quantum signatures* - ML-DSA (FIPS 204) is not yet supported for certificates
+
+*** Limited Support
+- *Elliptic curves* - Only X25519, secp256r1 (P-256), and secp384r1 (P-384) are supported. The following are not implemented:
+
+  - P-521 (secp521r1)
+  - Brainpool curves (brainpoolP256r1, brainpoolP384r1, brainpoolP512r1)
+  - Legacy curves (sect233k1, sect283k1, secp224r1, etc.)
+
+- *Signature algorithms* - RSA-PSS, ECDSA-P256, ECDSA-P384, Ed25519, and Ed448 are supported. Not implemented:
+
+  - DSA
+  - RSA-PKCS1 (deprecated in TLS 1.3 but still seen in some certificates)
+
+** Acknowledgments
+This library is derived from [[https://github.com/atgreen/pure-tls][pure-tls]],
+written by Anthony Green. The TLS 1.3 implementation, the post-quantum key
+exchange, the ECH support, the X.509 verification and the ACME client all
+originate there. The copyright notice and license terms are upstream's,
+unchanged.
+
+This project includes test files derived from the [[https://github.com/openssl/openssl][OpenSSL]] project:
+
+- =test/ssl-tests/= - TLS test configuration files
+- =test/certs/openssl/= - Test certificates
+
+These files are used under the Apache License 2.0. Copyright (c) OpenSSL Project Authors.
+
+This project also includes test key material derived from the [[https://boringssl.googlesource.com/boringssl][BoringSSL]] project:
+
+- =test/certs/boringssl/= - BoringSSL test keys used by the shim and local tests
+
+These files are used under the BoringSSL license. Copyright (c) BoringSSL Authors.
+
+This project also includes test certificates from Google's [[https://github.com/google/x509test][x509test]] project:
+
+- =test/certs/x509test/= - X.509 certificate validation test cases
+
+These files are used under the Apache License 2.0. Copyright (c) Google Inc.
+
+** License
+MIT License
+
+Copyright (c) 2026 Anthony Green [[mailto:green@moxielogic.com][green@moxielogic.com]]
+
+Contributing authors are listed in [[file:CONTRIBUTORS.org][CONTRIBUTORS]].
+The license is unchanged from upstream, and each contributor retains copyright
+in their own contributions.
+
+** See Also
+- [[https://tools.ietf.org/html/rfc8446][RFC 8446]] - TLS 1.3 specification
+- [[https://tools.ietf.org/html/rfc9639][RFC 9639]] - Encrypted Client Hello (ECH)
+- [[https://tools.ietf.org/html/rfc9180][RFC 9180]] - Hybrid Public Key Encryption (HPKE)
+- [[https://csrc.nist.gov/pubs/fips/203/final][FIPS 203]] - ML-KEM (Module-Lattice-Based Key-Encapsulation Mechanism)
+- [[https://tools.ietf.org/html/rfc8555][RFC 8555]] - ACME protocol specification
+- [[https://tools.ietf.org/html/rfc8737][RFC 8737]] - TLS-ALPN-01 challenge
+- [[https://letsencrypt.org/][Let's Encrypt]] - Free, automated certificate authority
+- [[https://github.com/cl-plus-ssl/cl-plus-ssl][cl+ssl]] - OpenSSL-based TLS for Common Lisp
+- [[https://github.com/atgreen/pure-tls][pure-tls]] - Upstream project boomer was forked from

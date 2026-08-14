@@ -1,0 +1,41 @@
+#+options: toc:nil num:nil
+
+* Contributors
+
+boomer is a fork of [[https://github.com/atgreen/pure-tls][pure-tls]] and is
+distributed under the MIT license, unchanged from upstream. Contributions made
+here are made under that same license, and each contributor retains copyright in
+their own contributions. This file lists the contributing authors. It does not
+alter the license, and the authoritative copyright notices are the ones carried
+in the source files themselves.
+
+** Anthony Green <green@moxielogic.com>
+
+Original author of pure-tls, from which boomer is derived. The TLS 1.3 protocol
+implementation, the post-quantum key exchange, the Encrypted Client Hello
+support, the X.509 verification and the ACME client all originate in that work.
+His copyright notice appears in the source files he authored.
+
+** John C. Mallery <jcma@csail.mit.edu>
+
+Contributed to pure-tls upstream, and that work is present here through the
+fork, including: the record buffer pool and its allocation context, reduced
+per-record allocation on the AEAD encrypt path, constant-time comparison in
+PKCS#1 v1.5 signature verification, and fixes to TLS 1.3 PSK session resumption.
+His copyright notice appears in =src/buffer-pool.lisp=. Commits are authored as
+=John Mallery <jcmallery@gmail.com>=.
+
+** Brian O'Reilly <fade@deepsky.com>
+
+Copyright (c) 2026 Brian O'Reilly.
+
+Contributed both upstream and in this fork. Upstream, among other work: an
+opt-in hostname verification policy, rejection of embedded-NUL and non-LDH bytes
+in hostname verification, failing closed on an unusable explicit CA source,
+authenticated PSK resumption under verify-required, acceptance of the RFC 8737
+id-pe-acmeIdentifier critical extension, keeping the account contact address out
+of ACME registration logs, recovery from transient ACME errors, and X.509 and
+handshake regression tests. In boomer: the opt-in strict-privacy hostname
+policy, the resumable record layer together with its adoption path and partial
+transport handling, a stream that refuses use once its connection has been
+handed over, and related hardening.

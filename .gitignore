@@ -25,9 +25,8 @@ test-load.lisp
 test-*.lisp
 RCS
 
-# Markdown files in top level (except README.md)
+# Markdown files in top level
 /*.md
-!/README.md
 # Explicitly ignore local review artifacts
 C-REVIEW.md
 

@@ -78,10 +78,29 @@
 
 (defun setup-close-on-cancel (context socket)
   "Set up automatic closure of SOCKET when CONTEXT is cancelled or deadline exceeded.
-   Returns a cleanup function that must be called when the socket operation completes.
-   This enables immediate interruption of blocking I/O operations."
+   Returns a release function that must be called once SOCKET is no longer this
+   caller's to close.  This enables immediate interruption of blocking I/O
+   operations, which cooperative checking between reads cannot provide.
+
+   The release function may be called any number of times; only the first call
+   does anything, and it never signals.  Both matter to the callers, which run it
+   from close and handover paths where an error would turn tidying up into a
+   failure of the operation that asked for it."
   (if context
-      (cl-cancel:close-stream-on-cancel socket context)
+      (let ((release (cl-cancel:close-stream-on-cancel socket context))
+            (released nil))
+        (lambda ()
+          (unless released
+            (setf released t)
+            ;; Releasing is two acts: telling the monitor to leave SOCKET alone,
+            ;; and waiting for its thread to finish.  Only the second can fail,
+            ;; and it does fail against bordeaux-threads releases whose
+            ;; JOIN-THREAD accepts no timeout argument.  The first act has
+            ;; already taken effect by then, so the failure is not worth
+            ;; propagating to a caller that is closing a stream.
+            (handler-case (funcall release)
+              (error () nil)))
+          nil))
       (lambda () nil)))
 
 ;;; Hostname-verification policy

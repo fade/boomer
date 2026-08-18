@@ -984,6 +984,159 @@
     (is (zerop (boomer::tls-stream-output-position stream))
         "and the write side still works")))
 
+;;;; Public API Surface
+
+(test record-engine-contract-is-public
+  "Every name a caller needs in order to drive the record engine is external in
+   BOOMER.
+
+   The engine is driven from outside the package, so a name that is merely
+   present is not enough: an internal name reaches a caller only through a
+   double-colon reference, which is legal but is not a promise the project has
+   made.  External visibility is the promise.
+
+   The check has a control, because an assertion that only ever looks at names
+   we intend to publish would pass whatever the package did.  Three names are
+   deliberately withheld and are asserted to stay withheld.  Chief among them is
+   RECORD-LAYER-INBOUND-HELD-P, which answers nothing a caller cannot get from
+   RECORD-LAYER-MESSAGE-AVAILABLE-P together with a zero return from
+   RECORD-LAYER-TAKE-PLAINTEXT."
+  (let ((contract '(;; The engine verbs, and the one way to obtain a layer.
+                    "RECORD-LAYER-FEED-CIPHERTEXT"
+                    "RECORD-LAYER-INPUT-WANTED"
+                    "RECORD-LAYER-MESSAGE-AVAILABLE-P"
+                    "RECORD-LAYER-TAKE-MESSAGE"
+                    "RECORD-LAYER-TAKE-PLAINTEXT"
+                    "RECORD-LAYER-PLAINTEXT-AVAILABLE"
+                    "RECORD-LAYER-NOTE-TRANSPORT-EOF"
+                    "RECORD-LAYER-SUBMIT-PLAINTEXT"
+                    "RECORD-LAYER-PENDING-OUTPUT"
+                    "RECORD-LAYER-ACK-OUTPUT"
+                    "ADOPT-RECORD-LAYER-FROM-TLS-STREAM"
+                    ;; Whether the stream that was handed over still owns
+                    ;; anything.
+                    "TLS-STREAM-SPENT-P"
+                    ;; The faults the engine signals, their parent, and the
+                    ;; readers that say what went wrong.
+                    "TLS-RECORD-ERROR"
+                    "TLS-RECORD-ERROR-CONTENT-TYPE"
+                    "TLS-PLAINTEXT-PENDING"
+                    "TLS-OUTPUT-IN-FLIGHT"
+                    "TLS-OUTPUT-ACK-OVERRUN"
+                    "TLS-STREAM-SPENT"
+                    "TLS-PLAINTEXT-PENDING-AVAILABLE"
+                    "TLS-OUTPUT-IN-FLIGHT-OUTSTANDING"
+                    "TLS-OUTPUT-ACK-OVERRUN-ACKNOWLEDGED"
+                    "TLS-OUTPUT-ACK-OVERRUN-OUTSTANDING"
+                    "TLS-STREAM-SPENT-OPERATION"
+                    ;; The content types the engine returns and accepts.
+                    "+CONTENT-TYPE-CHANGE-CIPHER-SPEC+"
+                    "+CONTENT-TYPE-ALERT+"
+                    "+CONTENT-TYPE-HANDSHAKE+"
+                    "+CONTENT-TYPE-APPLICATION-DATA+"
+                    ;; The two alert levels, so a caller can build the alert the
+                    ;; engine will not send for it.
+                    "+ALERT-LEVEL-WARNING+"
+                    "+ALERT-LEVEL-FATAL+"))
+        (withheld '("RECORD-LAYER-INBOUND-HELD-P"
+                    "ADOPT-RECORD-LAYER"
+                    "+CONTENT-TYPE-INVALID+"))
+        (not-public '())
+        (leaked '())
+        (absent '()))
+    (dolist (name contract)
+      (multiple-value-bind (symbol status) (find-symbol name :boomer)
+        (cond ((null symbol) (push name absent))
+              ((not (eq status :external)) (push (list name status) not-public)))))
+    (dolist (name withheld)
+      (multiple-value-bind (symbol status) (find-symbol name :boomer)
+        (cond ((null symbol) (push name absent))
+              ((eq status :external) (push name leaked)))))
+    (is (null absent)
+        "Named in the record engine contract but not present in BOOMER at all: ~{~A~^, ~}"
+        (nreverse absent))
+    (is (null not-public)
+        "Part of the record engine contract but not external in BOOMER: ~
+         ~{~{~A (~S)~}~^, ~}"
+        (nreverse not-public))
+    (is (null leaked)
+        "Withheld from the record engine contract on purpose but exported anyway: ~
+         ~{~A~^, ~}"
+        (nreverse leaked))))
+
+(test handover-refuses-every-key-the-stream-supplies
+  "One rule, applied the same way five times: what the stream supplies cannot
+   also be passed in.
+
+   Each of these names something the handover takes off the stream itself, so a
+   caller offering one is describing a connection that does not exist.  Two of
+   them are the live ciphers, and getting those from anywhere but the stream is
+   the hazard the whole design is arranged against: a cipher built fresh from
+   the same key starts its sequence number at zero, which spends nonces the
+   connection has already used.
+
+   The point of the test is that the answer is the same every time.  Refusing
+   some and quietly dropping others leaves a caller believing it installed
+   something it did not, and the belief is never corrected.
+
+   Each key is also checked to leave the stream unspent, since a refusal that
+   happened after the connection moved would be a refusal in name only."
+  (dolist (key '(:read-cipher :write-cipher :cipher-suite
+                 :in-plaintext :in-plaintext-start))
+    (let* ((payload (boomer::octet-vector 50 51 52))
+           (stream (make-handover-stream payload 0))
+           (value (ecase key
+                    ((:read-cipher :write-cipher) (handover-cipher 7))
+                    (:cipher-suite boomer:+tls-aes-128-gcm-sha256+)
+                    (:in-plaintext payload)
+                    (:in-plaintext-start 0)))
+           (refused (handler-case
+                        (progn (boomer::adopt-record-layer-from-tls-stream
+                                stream key value)
+                               nil)
+                      (error () t))))
+      (is (eq t refused)
+          "~S is refused rather than quietly ignored" key)
+      (is (not (boomer:tls-stream-spent-p stream))
+          "and the stream still owns its connection after refusing ~S" key))))
+
+(test a-spent-stream-cannot-be-revived-through-the-public-name
+  "Asking whether a stream is spent is public; saying that it is not is nobody's
+   business but the handover's.
+
+   A stream is marked spent because its transport and its live ciphers have gone
+   to a record layer.  Clearing that mark does not give them back, it only stops
+   the stream refusing work, and the two owners then advance one pair of
+   sequence numbers between them.  On the write side that repeats a nonce.  So
+   the question has a public answer and the assignment has none.
+
+   The write is attempted rather than looked up, because looking it up answers a
+   different question.  An image that once had a writer keeps the generic
+   function after the writer is gone, so the name stays bound with nothing
+   behind it; a fresh image does not have the name at all.  Both must refuse the
+   write, and only doing the write shows that.
+
+   The control is the reader: a check that only caught a missing writer would
+   also pass if the whole name disappeared, which would break every caller
+   rather than protect them."
+  (let ((stream (make-handover-stream (boomer::octet-vector 40 41 42) 0))
+        (write-refused nil))
+    (is (not (boomer:tls-stream-spent-p stream))
+        "A stream that still owns its connection reports itself unspent")
+    (boomer::adopt-record-layer-from-tls-stream stream)
+    (is (boomer:tls-stream-spent-p stream)
+        "and reports itself spent once the handover has taken them")
+    (setf write-refused
+          (handler-case
+              (progn (funcall (fdefinition '(setf boomer:tls-stream-spent-p))
+                              nil stream)
+                     nil)
+            (error () t)))
+    (is (eq t write-refused)
+        "Nothing outside can unspend a stream through TLS-STREAM-SPENT-P")
+    (is (boomer:tls-stream-spent-p stream)
+        "and the stream is still spent after the attempt")))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

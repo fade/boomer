@@ -44,10 +44,14 @@
     :documentation "Whether the stream has been closed.")
    (spent
     :initform nil
-    :accessor tls-stream-spent-p
+    :reader tls-stream-spent-p
     :documentation "Whether this stream's transport and ciphers have been handed to
     an adopted record layer.  Distinct from CLOSED: closed says the connection is
-    over, spent says it is alive and belongs to something else now.")
+    over, spent says it is alive and belongs to something else now.
+
+    Readable by anyone and writable by nobody.  The mark is not a preference, it
+    is a record of where the connection went, and clearing it would not bring
+    any of it back.")
    (cancel-monitor-cleanup
     :initform nil
     :reader tls-stream-cancel-monitor-cleanup
@@ -113,6 +117,20 @@
    can see which call it was rather than only that one of them was refused."
   (when (tls-stream-spent-p stream)
     (error 'tls-stream-spent :operation operation)))
+
+(defun mark-tls-stream-spent (stream)
+  "Record that STREAM's transport and its ciphers now belong to a record layer.
+
+   This is not exported, so it is no part of the public API and no public name
+   clears the mark.  Inside BOOMER it is the one place that sets it, which keeps
+   the handover the only thing that does.
+
+   A stream that has been marked and then unmarked is not a stream that got its
+   connection back: it is a second user of one socket and one pair of sequence
+   numbers, and the write side of that repeats a nonce the layer has already
+   spent."
+  (setf (slot-value stream 'spent) t)
+  stream)
 
 (defun set-tls-stream-cancel-monitor-cleanup (stream release)
   "Record RELEASE as what takes the close-on-cancel monitor off STREAM's transport.
@@ -496,9 +514,12 @@
 (defun adopt-record-layer-from-tls-stream (stream &rest keys)
   "Build a record layer for the data phase from the finished blocking STREAM.
 
+   This is the only way to obtain a record layer, so everything a caller has to
+   know before driving one is stated here.
+
    The live AEAD ciphers, the transport and the plaintext STREAM has buffered
    but not yet handed out all move across, and STREAM is left holding no inbound
-   plaintext.  Remaining KEYS are passed to ADOPT-RECORD-LAYER unchanged.
+   plaintext.
 
    The inbound plaintext cannot be supplied by the caller, because supplying it
    and taking it from STREAM are two answers to the same question and there is
@@ -508,9 +529,61 @@
    write or to close now belongs to the returned layer.  Any later use of it
    signals TLS-STREAM-SPENT rather than acting on state it no longer owns.  A
    handover that fails leaves STREAM exactly as it was and usable, since nothing
-   took what it is holding."
+   took what it is holding.
+
+   The returned layer is not thread-safe, and nothing in it checks.  One
+   connection's layer belongs to one thread at a time.  The ordinary arrangement
+   crosses a thread boundary exactly once: the thread that ran the handshake
+   calls this, publishes the layer to the thread that will drive the connection
+   from then on, and never touches it again.  That publication has to be made
+   safely by the caller, because the layer offers no lock, no ownership check
+   and no way to notice that two threads are advancing the same sequence
+   numbers.
+
+   The layer sends no alerts.  It owns no stream to send one on, so a protocol
+   fault reaches the caller as a signalled condition and stops there.  A caller
+   that does not then send the alert itself leaves a peer that sent something
+   invalid with no way to tell why the connection ended, which is the difference
+   between a diagnosable failure and a hang.  The alert level and description
+   constants are exported for that purpose.
+
+   Those faults are not all one class.  TLS-RECORD-ERROR covers what goes wrong
+   with a record, which is the group worth answering with an alert.  Using this
+   stream after the handover signals TLS-STREAM-SPENT, which is a mistake about
+   who owns the connection and is not under TLS-RECORD-ERROR.  A handler meant
+   to catch everything should be on TLS-ERROR.
+
+   A known limitation, reasoned from the code and not yet reproduced against a
+   peer: a post-handshake message that arrived alongside the last message of the
+   handshake, or that was still being reassembled when the handover happened, is
+   not carried across and is lost.  A NewSessionTicket arriving that way is
+   legal and routine, and losing one presents later as resumption quietly not
+   working rather than as anything to do with the handover.  A caller for which
+   resumption matters should read a connection that produced no ticket as
+   unremarkable rather than as evidence about the peer.
+
+   KEYS set the new layer's own budgets and its cancellation context.  The
+   accepted ones are:
+
+     :MAX-SEND-FRAGMENT   the largest plaintext the layer will put in one
+                          outgoing record.
+     :REQUEST-CONTEXT     an optional cl-cancel context, so a caller can cancel
+                          or time out work the layer does on the transport.
+     :MAX-IN-CIPHERTEXT   the layer's own budget for each of the four record
+     :MAX-IN-PLAINTEXT    buffers.  They default to the protocol ceilings, which
+     :MAX-OUT-PLAINTEXT   is what the layer has always accepted; a caller
+     :MAX-OUT-CIPHERTEXT  holding many connections at once can set them lower to
+                          spend less memory per connection.
+
+   Everything else the layer needs is taken from STREAM, and one rule covers all
+   of it: what the stream supplies cannot also be passed here.  :READ-CIPHER,
+   :WRITE-CIPHER, :CIPHER-SUITE, :IN-PLAINTEXT and :IN-PLAINTEXT-START are
+   therefore refused outright.  Each is refused rather than quietly dropped,
+   because a caller that believes it supplied a cipher and did not would be
+   wrong about the one thing this handover exists to get right."
   (loop for key in keys by #'cddr
-        when (member key '(:in-plaintext :in-plaintext-start))
+        when (member key '(:read-cipher :write-cipher :cipher-suite
+                           :in-plaintext :in-plaintext-start))
           do (error "adopt-record-layer-from-tls-stream: ~S comes from STREAM and cannot be passed in."
                     key))
   (let ((layer (tls-stream-record-layer stream))
@@ -538,7 +611,7 @@
                 (tls-stream-input-position stream) position))))
     ;; Last, and only now that the layer exists.  Marking any earlier would spend
     ;; a stream that a failed handover leaves as the only owner of the connection.
-    (setf (tls-stream-spent-p stream) t)
+    (mark-tls-stream-spent stream)
     ;; The monitor goes with the transport it was watching.  The returned layer
     ;; is driven by being fed octets and never parks in a read, so there is no
     ;; blocked I/O left for a monitor to interrupt, and an armed one would only

@@ -175,7 +175,17 @@
              (format stream "TLS record error~@[ (content-type ~D)~]~@[: ~A~]"
                      (tls-record-error-content-type condition)
                      (tls-error-message condition))))
-  (:documentation "Error in TLS record layer"))
+  (:documentation "Error in TLS record layer.
+
+   Handling this catches the record layer's own faults and nothing else, which
+   is what a caller wants when it is deciding whether to send an alert and give
+   up on a connection.  It is not the whole family: TLS-STREAM-SPENT reports a
+   caller using a stream whose connection has moved on, which is a mistake about
+   ownership rather than about a record, and it sits beside this class rather
+   than under it.  TLS-ERROR is the root that covers both.
+
+   CONTENT-TYPE is the record type the fault was found in, where the layer knew
+   it, and NIL where it did not."))
 
 (define-condition tls-record-overflow (tls-record-error)
   ((size :initarg :size
@@ -263,7 +273,11 @@
    after that advances a counter the layer is also advancing, which leaves the two
    ends of the connection counting differently, and closing it takes the transport
    away from an owner that is still using it.  The stream refuses rather than
-   letting either happen quietly."))
+   letting either happen quietly.
+
+   This is a fault about ownership, not about a record, so it is not caught by
+   handling TLS-RECORD-ERROR.  A caller that wants every fault the record engine
+   can raise, this one included, should handle TLS-ERROR."))
 
 ;;;; Crypto Errors
 

@@ -1,0 +1,7 @@
+# Git for Windows checks out text files as CRLF by default (core.autocrlf=true).
+# Common Lisp's FORMAT line-continuation directive is a tilde immediately
+# followed by a newline; under CRLF the next character is a carriage return
+# instead, so FORMAT rejects it as an unknown directive and the file fails to
+# compile. Pinning LF keeps every tracked text file byte-identical on all
+# platforms.
+* text=auto eol=lf

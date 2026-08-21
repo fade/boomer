@@ -125,6 +125,46 @@
    #:*use-macos-keychain*
    #+(or darwin macos) #:verify-certificate-chain-macos
 
+   ;; Record engine: driving a finished connection from an event loop
+   #:record-layer-feed-ciphertext
+   #:record-layer-input-wanted
+   #:record-layer-message-available-p
+   #:record-layer-take-message
+   #:record-layer-take-plaintext
+   #:record-layer-plaintext-available
+   #:record-layer-note-transport-eof
+   #:record-layer-submit-plaintext
+   #:record-layer-pending-output
+   #:record-layer-ack-output
+   #:adopt-record-layer-from-tls-stream
+
+   ;; Record engine: what is left of a stream that has been handed over
+   #:tls-stream-spent-p
+
+   ;; Record engine: the faults it signals, and what they can be asked
+   #:tls-record-error
+   #:tls-record-error-content-type
+   #:tls-plaintext-pending
+   #:tls-plaintext-pending-available
+   #:tls-output-in-flight
+   #:tls-output-in-flight-outstanding
+   #:tls-output-ack-overrun
+   #:tls-output-ack-overrun-acknowledged
+   #:tls-output-ack-overrun-outstanding
+   #:tls-stream-spent
+   #:tls-stream-spent-operation
+
+   ;; Record content types, as returned by RECORD-LAYER-TAKE-MESSAGE and
+   ;; accepted by RECORD-LAYER-SUBMIT-PLAINTEXT
+   #:+content-type-change-cipher-spec+
+   #:+content-type-alert+
+   #:+content-type-handshake+
+   #:+content-type-application-data+
+
+   ;; Alert levels, for the alerts a caller of the record engine sends itself
+   #:+alert-level-warning+
+   #:+alert-level-fatal+
+
    ;; ECH (Encrypted Client Hello)
    #:tls-ech-accepted-p
    #:tls-ech-retry-error

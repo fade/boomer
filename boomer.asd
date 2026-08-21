@@ -133,6 +133,7 @@
                              (:file "trust-store-tests")
                              (:file "cancel-tests")
                              (:file "cancel-integration-tests")
+                             (:file "cancel-monitor-tests")
                              (:file "network-tests")
                              (:file "openssl-tests")
                              (:file "boringssl-tests")

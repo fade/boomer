@@ -48,6 +48,19 @@
     :documentation "Whether this stream's transport and ciphers have been handed to
     an adopted record layer.  Distinct from CLOSED: closed says the connection is
     over, spent says it is alive and belongs to something else now.")
+   (cancel-monitor-cleanup
+    :initform nil
+    :reader tls-stream-cancel-monitor-cleanup
+    :documentation "Function that releases the close-on-cancel monitor watching
+    the transport, or NIL when the stream was built without a cancel context.
+    Held for the life of the stream rather than released once the handshake is
+    done, because the monitor is the only thing that can interrupt a data-phase
+    read already parked in the transport.
+
+    Readable but not writable from outside, for the same reason as SPENT: which
+    transport this stream may still close is not something a caller should be
+    able to talk it out of.  SET-TLS-STREAM-CANCEL-MONITOR-CLEANUP is the only
+    writer.")
    (close-callback
     :initarg :close-callback
     :initform nil
@@ -101,6 +114,25 @@
   (when (tls-stream-spent-p stream)
     (error 'tls-stream-spent :operation operation)))
 
+(defun set-tls-stream-cancel-monitor-cleanup (stream release)
+  "Record RELEASE as what takes the close-on-cancel monitor off STREAM's transport.
+
+   RELEASE is NIL once the monitor has been let go, which is what makes releasing
+   twice a no-op rather than a second call into a monitor that is already gone."
+  (setf (slot-value stream 'cancel-monitor-cleanup) release))
+
+(defun release-cancel-monitor (stream)
+  "Release the close-on-cancel monitor watching STREAM's transport, if it has one.
+
+   Called when the transport stops being STREAM's to close, whether because the
+   connection is over or because it was handed to somebody else.  Harmless to
+   call more than once, and on a stream that never had a monitor."
+  (let ((release (tls-stream-cancel-monitor-cleanup stream)))
+    (when release
+      (set-tls-stream-cancel-monitor-cleanup stream nil)
+      (funcall release)))
+  nil)
+
 ;;;; Stream Methods
 
 (defmethod stream-element-type ((stream tls-stream))
@@ -137,6 +169,12 @@
         (error () nil)))
     ;; Mark as closed
     (setf (tls-stream-closed-p stream) t)
+    ;; The monitor exists to interrupt I/O that is already blocked, so it is
+    ;; released only once there is no I/O left for it to interrupt.  Releasing
+    ;; it any earlier would leave a data-phase read unreachable by cancellation,
+    ;; and leaving it armed would let a later cancellation reach a transport
+    ;; this stream is finished with.
+    (release-cancel-monitor stream)
     ;; Call close callback
     (when (tls-stream-close-callback stream)
       (funcall (tls-stream-close-callback stream) stream)))
@@ -264,13 +302,13 @@
         (case content-type
           (#.+content-type-application-data+
            ;; Check for empty records (DoS prevention)
-           (cond ((zerop (length data)) 
+           (cond ((zerop (length data))
                  (incf (tls-stream-empty-record-count stream))
                  (when (> (tls-stream-empty-record-count stream) +max-empty-records+)
                    (error 'tls-error :message ":TOO_MANY_EMPTY_FRAGMENTS:"))
                  ;; Recursively try for more data
                  (tls-stream-fill-buffer stream))
-      (t 
+      (t
                  ;; Reset counters on non-empty application data
                  (setf (tls-stream-warning-alert-count stream) 0)
                  (setf (tls-stream-empty-record-count stream) 0)
@@ -501,6 +539,11 @@
     ;; Last, and only now that the layer exists.  Marking any earlier would spend
     ;; a stream that a failed handover leaves as the only owner of the connection.
     (setf (tls-stream-spent-p stream) t)
+    ;; The monitor goes with the transport it was watching.  The returned layer
+    ;; is driven by being fed octets and never parks in a read, so there is no
+    ;; blocked I/O left for a monitor to interrupt, and an armed one would only
+    ;; be able to close a transport that now belongs to the layer.
+    (release-cancel-monitor stream)
     adopted))
 
 ;;;; Output Methods
@@ -689,6 +732,7 @@
                              (load-private-key key-source))))
                         (t client-key))))  ; Already an Ironclad key object
     (setf (tls-stream-record-layer stream) record-layer)
+    (set-tls-stream-cancel-monitor-cleanup stream cancel-monitor)
     ;; Perform handshake (CertificateVerify is verified during handshake)
     ;; Skip hostname verification if only sni-hostname is provided (no hostname)
     ;; Parse ECH configs if raw bytes provided
@@ -823,6 +867,7 @@
     (unless private-key
       (error 'tls-error :message "Server requires a private key"))
     (setf (tls-stream-record-layer stream) record-layer)
+    (set-tls-stream-cancel-monitor-cleanup stream cancel-monitor)
     ;; Perform server handshake
     (let ((hs (perform-server-handshake
                record-layer

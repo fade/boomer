@@ -7,6 +7,13 @@
  ;; diff and tells a reader nothing. Style, not correctness.
  (:disable :needless-let*)
 
+ ;; An eval reached by unknowable input is a hard error, so I raise this rule to
+ ;; :error and let it refuse the commit outright. Legitimate uses exist and are
+ ;; rare; the way to keep one is a mallet:suppress directive at the call site
+ ;; giving the reason it is safe there, which a later reader can check. A global
+ ;; severity nobody re-reads cannot be checked.
+ (:enable :no-eval :severity :error)
+
  ;; Not in the :default preset, so it has to be asked for. It marks places where
  ;; a bare ERROR raises SIMPLE-ERROR instead of a condition this library defines,
  ;; which matters for a TLS implementation: a caller that cannot distinguish a

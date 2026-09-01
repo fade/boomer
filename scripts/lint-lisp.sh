@@ -58,4 +58,4 @@ if [ ${#files[@]} -eq 0 ]; then
     exit 0
 fi
 
-exec "$MALLET" --config "$ROOT/.mallet.lisp" --format line "${files[@]}"
+exec "$MALLET" --config "$ROOT/.mallet.lisp" --format line --fail-on error "${files[@]}"

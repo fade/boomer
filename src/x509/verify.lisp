@@ -312,12 +312,15 @@ a full list lives at https://publicsuffix.org/.")
 ;;;
 ;;; For now, we provide basic building blocks.
 
-(defun verify-certificate-chain (chain trusted-roots &optional (now (get-universal-time)) hostname
-                                 &key check-revocation (trust-anchor-mode :replace) purpose)
+(defun verify-certificate-chain (chain trusted-roots
+                                 &key (now (get-universal-time)) hostname
+                                      check-revocation (trust-anchor-mode :replace) purpose)
   "Verify a certificate chain against trusted roots.
    CHAIN is a list of certificates, leaf first.
    TRUSTED-ROOTS is a list of trusted CA certificates. When NIL on Windows/macOS,
    native OS verification uses the system trust store.
+   NOW is the universal time the validity window is judged against, defaulting
+   to the current time.
    HOSTNAME is optional; if provided, enables hostname verification on native platforms.
    CHECK-REVOCATION if T, checks certificate revocation via CRL/OCSP (default NIL).
    TRUST-ANCHOR-MODE controls how trusted-roots interact with system store:

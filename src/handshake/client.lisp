@@ -1637,7 +1637,8 @@
                                    nil
                                    hostname)))
           (verify-certificate-chain chain trusted-roots
-                                    (get-universal-time) verify-hostname
+                                    :now (get-universal-time)
+                                    :hostname verify-hostname
                                     :purpose :server-auth))))
     (setf (client-handshake-state hs) :wait-finished)))
 

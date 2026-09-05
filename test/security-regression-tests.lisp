@@ -109,11 +109,11 @@
                   (boomer::certificate-critical-extensions leaf))
           "Fixture leaf should carry a critical ExtendedKeyUsage extension")
       ;; With :purpose :server-auth, a clientAuth-only leaf must be rejected.
-      ;; (now and hostname are positional &optional args before the &key.)
       (signals boomer:tls-certificate-error
         (boomer::verify-certificate-chain (list leaf) (list root)
-                                            (get-universal-time) nil
-                                            :purpose :server-auth)))))
+                                          :now (get-universal-time)
+                                          :hostname nil
+                                          :purpose :server-auth)))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: resumption must carry forward the original handshake's
@@ -497,7 +497,8 @@
                               :basic-constraints :ca-false)))
       (signals boomer:tls-certificate-error
         (boomer::verify-certificate-chain (list leaf inter) (list inter)
-                                            now nil :trust-anchor-mode :replace)))
+                                          :now now :hostname nil
+                                          :trust-anchor-mode :replace)))
     ;; Intermediate carries no BasicConstraints extension at all.
     (let ((leaf (%chain-cert "leaf.example" "Intermediate CA"
                              :basic-constraints :absent))
@@ -505,7 +506,8 @@
                               :basic-constraints :absent)))
       (signals boomer:tls-certificate-error
         (boomer::verify-certificate-chain (list leaf inter) (list inter)
-                                            now nil :trust-anchor-mode :replace)))))
+                                          :now now :hostname nil
+                                          :trust-anchor-mode :replace)))))
 
 (test chain-rejects-pathlen-violation
   "A CA asserting pathLenConstraint=0 with an intermediate CA below it in the
@@ -520,7 +522,8 @@
         ;; Baseline: the untampered chain verifies, so the rejection below is
         ;; attributable solely to the path-length constraint.
         (is (boomer::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                              :now now :hostname nil
+                                              :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Assert pathLenConstraint=0 on the trusted root: it may issue end
         ;; entities but no intermediate CA -- and the chain has exactly one.
@@ -531,7 +534,8 @@
                 (list :ca t :path-length-constraint 0)))
         (signals boomer:tls-certificate-error
           (boomer::verify-certificate-chain (list leaf inter root) (list root)
-                                              now nil :trust-anchor-mode :replace))))))
+                                            :now now :hostname nil
+                                            :trust-anchor-mode :replace))))))
 
 (test chain-rejects-tampered-signature
   "A chain that passes name / CA / pathLen / date checks but whose leaf
@@ -545,7 +549,8 @@
                    (test-cert-path "openssl/root-cert.pem"))))
         ;; Baseline: the untampered chain verifies.
         (is (boomer::verify-certificate-chain (list leaf inter root) (list root)
-                                                now nil :trust-anchor-mode :replace)
+                                              :now now :hostname nil
+                                              :trust-anchor-mode :replace)
             "Untampered goodcn2 chain should verify")
         ;; Flip one byte of the leaf signature.  Every earlier check still
         ;; passes, so a rejection can only come from signature verification.
@@ -554,7 +559,8 @@
           (setf (boomer::x509-certificate-signature leaf) sig))
         (signals boomer:tls-certificate-error
           (boomer::verify-certificate-chain (list leaf inter root) (list root)
-                                              now nil :trust-anchor-mode :replace))))))
+                                            :now now :hostname nil
+                                            :trust-anchor-mode :replace))))))
 
 (test chain-rejects-expired-leaf
   "A leaf whose notAfter is in the past must be rejected."
@@ -568,7 +574,8 @@
       ;; tls-certificate-expired is internal to boomer (double colon).
       (signals boomer::tls-certificate-expired
         (boomer::verify-certificate-chain (list leaf root) (list root)
-                                            now nil :trust-anchor-mode :replace)))))
+                                          :now now :hostname nil
+                                          :trust-anchor-mode :replace)))))
 
 (test chain-rejects-not-yet-valid-leaf
   "A leaf whose notBefore is in the future must be rejected."
@@ -582,7 +589,74 @@
       ;; tls-certificate-not-yet-valid is internal to boomer (double colon).
       (signals boomer::tls-certificate-not-yet-valid
         (boomer::verify-certificate-chain (list leaf root) (list root)
-                                            now nil :trust-anchor-mode :replace)))))
+                                          :now now :hostname nil
+                                          :trust-anchor-mode :replace)))))
+
+;;;; ---------------------------------------------------------------------------
+;;;; Finding: the public arguments of verify-certificate-chain silently
+;;;; swallowed a keyword call.
+;;;;
+;;;; NOW and HOSTNAME used to be positional &optional parameters sitting ahead
+;;;; of the &key section.  In Common Lisp a lambda list mixing the two makes the
+;;;; optionals eat the keyword arguments, so a caller writing
+;;;;
+;;;;   (verify-certificate-chain chain roots :check-revocation t)
+;;;;
+;;;; bound NOW to the keyword :CHECK-REVOCATION, HOSTNAME to T, and
+;;;; CHECK-REVOCATION to NIL.  No error and no warning: revocation checking was
+;;;; off while the caller believed it was on.
+;;;;
+;;;; Secure behaviour: the flag reaches the revocation checker.  This test
+;;;; stands in for every optional argument of the function, because one keyword
+;;;; argument arriving intact proves the lambda list no longer absorbs them.
+;;;; ---------------------------------------------------------------------------
+
+(test revocation-flag-survives-keyword-only-call
+  "Passing :check-revocation t with no positional NOW or HOSTNAME must enable
+   revocation checking rather than being absorbed by a positional parameter."
+  (let ((boomer:*use-windows-certificate-store* nil)
+        (boomer:*use-macos-keychain* nil))
+    (destructuring-bind (leaf inter)
+        (%pem-chain (test-cert-path "openssl/goodcn2-chain.pem"))
+      (let* ((root (boomer:parse-certificate-from-file
+                    (test-cert-path "openssl/root-cert.pem")))
+             (chain (list leaf inter root))
+             (roots (list root))
+             (calls 0)
+             (real-checker (symbol-function 'boomer::check-certificate-revocation)))
+        ;; Stand in for the CRL checker so the assertion counts calls instead of
+        ;; reaching the network.  The fixture leaf carries no CRL distribution
+        ;; point, so the real checker would answer :unknown without telling us
+        ;; whether it ran at all.
+        (unwind-protect
+             (progn
+               (setf (symbol-function 'boomer::check-certificate-revocation)
+                     (lambda (certificate &key issuer-cert (verify-signature t))
+                       (declare (ignore certificate issuer-cert verify-signature))
+                       (incf calls)
+                       :valid))
+               ;; Baseline: with the flag absent the checker must stay untouched,
+               ;; so a later non-zero count is attributable to the flag alone.
+               (is (boomer::verify-certificate-chain chain roots)
+                   "Untampered goodcn2 chain should verify")
+               (is (zerop calls)
+                   "Revocation checker must not run when :check-revocation is absent")
+               ;; A keyword absorbed by a positional parameter shows up twice
+               ;; over: the call fails outright (NOW is handed a keyword instead
+               ;; of a universal time) and the checker is never consulted.
+               ;; Capture the outcome so both facts get asserted.
+               (let ((outcome (handler-case
+                                  (progn
+                                    (boomer::verify-certificate-chain
+                                     chain roots :check-revocation t)
+                                    :verified)
+                                (error (e) e))))
+                 (is (eq :verified outcome)
+                     "Keyword-only call should verify the chain, got: ~A" outcome)
+                 (is (plusp calls)
+                     "Passing :check-revocation t must reach the revocation checker")))
+          (setf (symbol-function 'boomer::check-certificate-revocation)
+                real-checker))))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; Finding: RFC 5280 4.2.1.3 -- an issuer whose KeyUsage extension is present
@@ -611,7 +685,8 @@
                                :key-usage '(:crl-sign))))
       (signals boomer:tls-certificate-error
         (boomer::verify-certificate-chain (list leaf issuer) (list issuer)
-                                            now nil :trust-anchor-mode :replace)))))
+                                          :now now :hostname nil
+                                          :trust-anchor-mode :replace)))))
 
 ;;;; ---------------------------------------------------------------------------
 ;;;; DNS name-safety in hostname verification.

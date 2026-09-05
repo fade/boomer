@@ -78,8 +78,9 @@ Use with drakma via cl+ssl compatibility layer (drop-in OpenSSL replacement):
 
 #+begin_src lisp
 ;; Enable CRL/OCSP checking during verification
-(boomer::verify-certificate-chain chain roots now hostname
-                                    :check-revocation t)
+(boomer::verify-certificate-chain chain roots
+                                  :now now :hostname hostname
+                                  :check-revocation t)
 
 ;; Check a single certificate
 (boomer::check-certificate-revocation cert)

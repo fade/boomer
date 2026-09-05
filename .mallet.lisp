@@ -27,11 +27,11 @@
  ;; wraps a deliberately malformed input in IGNORE-ERRORS is doing exactly its
  ;; job, and an unused binding in a fixture is often there to document the shape
  ;; of the thing under test.
- (:path "test/"
-        (:disable :no-ignore-errors)
-        (:disable :unused-variables))
+ (:for-paths ("test/")
+             (:disable :no-ignore-errors)
+             (:disable :unused-variables))
 
  ;; Vendored or generated test vectors are not ours to reformat.
- (:path "test/vectors/"
-        (:disable :trailing-whitespace)
-        (:disable :missing-final-newline)))
+ (:for-paths ("test/vectors/")
+             (:disable :trailing-whitespace)
+             (:disable :missing-final-newline)))

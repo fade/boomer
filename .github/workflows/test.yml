@@ -18,22 +18,20 @@ jobs:
           - os: macos-latest
             name: macOS
             blocking: true
-          # The Windows leg has been failing continuously since 2026-08-06 while
-          # Linux, macOS and the BoringSSL job stayed green. Because every leg
-          # decided the run's conclusion, that one failure made the whole run red
-          # on every commit, and a real Linux or macOS regression would have
-          # landed in a run that was already red with nobody able to tell.
-          # Keeping it non-blocking restores the other legs' power to turn a
-          # green run red, while the leg still runs and still reports.
+          # I make Windows decide the run's verdict because a change that is
+          # correct on Linux is not automatically correct everywhere. Line
+          # endings, path separators and default character encodings all differ
+          # on Windows, and a leg that cannot turn a green run red cannot catch
+          # that class of regression at all.
           - os: windows-latest
             name: Windows
-            blocking: false
+            blocking: true
 
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }} (SBCL)
 
-    # A non-blocking leg still runs, and its result is still visible on the run;
-    # it just does not decide the conclusion.
+    # A leg marked non-blocking still runs, and its result is still visible on
+    # the run; it just does not decide the conclusion.
     continue-on-error: ${{ !matrix.blocking }}
 
     defaults:

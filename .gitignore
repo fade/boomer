@@ -27,12 +27,6 @@ RCS
 
 # Markdown files in top level
 /*.md
-# Explicitly ignore local review artifacts
-C-REVIEW.md
-
-# Local planning docs
-ROADMAP.md
-PROJECT.md
 
 # Build artifacts
 pure-tls-shim
@@ -43,4 +37,3 @@ test/chrome-interop/localhost-key.pem
 
 # Large test vector files (download separately)
 test/vectors/*.rsp
-.codex

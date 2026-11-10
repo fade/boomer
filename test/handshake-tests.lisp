@@ -827,6 +827,178 @@
       :legacy-compression-method 0
       :extensions (list (%supported-versions-server-hello-ext boomer::+tls-1.2+))))))
 
+;;;; Session ticket binding
+;;;;
+;;;; A ticket is issued on one server handshake and offered on another, with
+;;;; the binder computed as a client would compute it, so TRY-ACCEPT-PSK runs
+;;;; its whole acceptance path: decryption, cipher suite, age, and binder.
+
+(defun %issue-ticket (sni)
+  "Issue a NewSessionTicket on a server handshake whose ClientHello carried SNI.
+   Return (VALUES new-session-ticket resumption-master-secret cipher-suite)."
+  (let* ((suite boomer::+tls-aes-128-gcm-sha256+)
+         (rms (boomer::random-bytes 32))
+         (hs (boomer::make-server-handshake
+              :selected-cipher-suite suite
+              :resumption-master-secret rms
+              :client-hostname sni)))
+    (values (boomer::generate-new-session-ticket hs) rms suite)))
+
+(defun %offer-ticket (ticket-bytes age-add rms nonce suite sni)
+  "Offer TICKET-BYTES as the only PSK identity on a fresh server handshake whose
+   ClientHello carried SNI.  AGE-ADD obfuscates a ticket age of zero; RMS and
+   NONCE give the PSK the binder is computed with.
+   Return the PSK TRY-ACCEPT-PSK selects, or NIL."
+  (let* ((psk (boomer::derive-resumption-psk rms nonce suite))
+         (binder-len (ironclad:digest-length (boomer::cipher-suite-digest suite)))
+         ;; Stand-in ClientHello: arbitrary bytes up to the binders, then a
+         ;; binders region of the right length whose contents are not hashed.
+         (partial-hello (boomer::random-bytes 64))
+         (raw-hello (boomer::concat-octet-vectors
+                     partial-hello (boomer::make-octet-vector (+ 2 1 binder-len))))
+         (binder (boomer::compute-binder
+                  psk
+                  (ironclad:digest-sequence (boomer::cipher-suite-digest suite)
+                                            partial-hello)
+                  suite))
+         (psk-ext (boomer::make-pre-shared-key-ext
+                   :identities (list (boomer::make-psk-identity
+                                      :identity ticket-bytes
+                                      :obfuscated-ticket-age (logand age-add #xFFFFFFFF)))
+                   :binders (list binder)))
+         (hs (boomer::make-server-handshake
+              :client-hostname sni
+              :transcript (copy-seq raw-hello))))
+    (boomer::try-accept-psk hs psk-ext raw-hello suite)))
+
+(defun %resume-under (issued-sni offered-sni)
+  "Issue a ticket under ISSUED-SNI, offer it unaltered under OFFERED-SNI, and
+   return the selected PSK or NIL."
+  (multiple-value-bind (nst rms suite) (%issue-ticket issued-sni)
+    (%offer-ticket (boomer::new-session-ticket-ticket nst)
+                   (boomer::new-session-ticket-ticket-age-add nst)
+                   rms (boomer::new-session-ticket-ticket-nonce nst) suite
+                   offered-sni)))
+
+(test session-ticket-resumes-under-the-name-it-was-issued-for
+  "A ticket resumes under the SNI it was issued for, compared without regard to
+   ASCII case."
+  (is (%resume-under "a.example" "a.example"))
+  (is (%resume-under "a.example" "A.Example"))
+  (is (%resume-under nil nil)
+      "A ticket issued without SNI resumes without SNI"))
+
+(test session-ticket-refused-under-another-name
+  "A ticket offered under a different SNI, or with SNI on only one side, selects
+   no PSK."
+  (is (null (%resume-under "a.example" "b.example")))
+  (is (null (%resume-under "a.example" nil)))
+  (is (null (%resume-under nil "a.example"))))
+
+(test session-ticket-refused-when-clear-fields-are-altered
+  "A ticket whose clear age_add or lifetime prefix was altered selects no PSK,
+   even when the client's obfuscated age is consistent with the altered age_add."
+  (multiple-value-bind (nst rms suite) (%issue-ticket "a.example")
+    (let ((ticket (boomer::new-session-ticket-ticket nst))
+          (age-add (boomer::new-session-ticket-ticket-age-add nst))
+          (nonce (boomer::new-session-ticket-ticket-nonce nst)))
+      (is (%offer-ticket ticket age-add rms nonce suite "a.example")
+          "The unaltered ticket resumes")
+      (let ((longer (copy-seq ticket)))
+        (replace longer (boomer::encode-uint32-be #xFFFFFFFF) :start1 4)
+        (is (null (%offer-ticket longer age-add rms nonce suite "a.example"))
+            "An extended lifetime is refused"))
+      (let ((other-add (copy-seq ticket))
+            (new-add (logand (1+ age-add) #xFFFFFFFF)))
+        (replace other-add (boomer::encode-uint32-be new-add) :start1 0)
+        (is (null (%offer-ticket other-add new-add rms nonce suite "a.example"))
+            "A substituted age_add is refused")))))
+
+(defun %loopback-handshake (sni)
+  "Run one boomer client to boomer server handshake over loopback with client
+   SNI, then pass one application byte each way so the client reads the
+   server's NewSessionTicket.
+   Return (VALUES client-psk-accepted server-psk-accepted byte-received);
+   server-psk-accepted is the condition object if the server signalled."
+  (let* ((listener (usocket:socket-listen "127.0.0.1" 0
+                                          :reuse-address t
+                                          :element-type '(unsigned-byte 8)))
+         (server-result nil)
+         (server-thread nil)
+         (client-socket nil))
+    (unwind-protect
+         (progn
+           (setf server-thread
+                 (bt2:make-thread
+                  (lambda ()
+                    (handler-case
+                        (let ((peer (usocket:socket-accept
+                                     listener :element-type '(unsigned-byte 8))))
+                          (unwind-protect
+                               (let ((s (boomer:make-tls-server-stream
+                                         (usocket:socket-stream peer)
+                                         :certificate (test-cert-path "resumption-leaf.pem")
+                                         :key (test-cert-path "resumption-leaf.key"))))
+                                 (setf server-result
+                                       (boomer::server-handshake-psk-accepted
+                                        (boomer::tls-stream-handshake s)))
+                                 (write-byte 42 s)
+                                 (force-output s)
+                                 (read-byte s nil))
+                            (handler-case (usocket:socket-close peer)
+                              (error () nil))))
+                      (error (e) (setf server-result e))))
+                  :name "session-ticket-loopback-server"))
+           (setf client-socket
+                 (usocket:socket-connect "127.0.0.1" (usocket:get-local-port listener)
+                                         :element-type '(unsigned-byte 8)))
+           (let* ((c (boomer:make-tls-client-stream
+                      (usocket:socket-stream client-socket)
+                      :sni-hostname sni
+                      :verify boomer:+verify-none+))
+                  (byte (read-byte c)))
+             (write-byte 1 c)
+             (force-output c)
+             (bt2:join-thread server-thread)
+             (setf server-thread nil)
+             (values (boomer::client-handshake-psk-accepted (boomer::tls-stream-handshake c))
+                     server-result
+                     byte)))
+      ;; Close the client first so a server blocked on a read returns.
+      (when client-socket
+        (handler-case (usocket:socket-close client-socket) (error () nil)))
+      (when server-thread
+        (handler-case (bt2:join-thread server-thread) (error () nil)))
+      (handler-case (usocket:socket-close listener) (error () nil)))))
+
+(test session-ticket-under-another-name-falls-back-to-full-handshake
+  "Over loopback, a ticket issued for a.example resumes under a.example and
+   A.Example; offered under b.example, the handshake completes as a full
+   handshake with no PSK.  This checks the acceptance policy only: both ends
+   share boomer's binder transcript, so resumption-interop-tests covers that."
+  (let ((boomer:*session-ticket-cache* (make-hash-table :test 'equal)))
+    (multiple-value-bind (client-psk server-psk byte) (%loopback-handshake "a.example")
+      (is (eql 42 byte))
+      (is (not client-psk) "The first connection is a full handshake")
+      (is (eq nil server-psk)))
+    (let ((ticket (boomer::session-ticket-cache-get "a.example")))
+      (is (not (null ticket)) "The client holds a ticket for a.example")
+      (when ticket
+        (boomer::session-ticket-cache-put "A.Example" (boomer::copy-session-ticket ticket))
+        (boomer::session-ticket-cache-put "b.example" (boomer::copy-session-ticket ticket))
+        (multiple-value-bind (client-psk server-psk byte) (%loopback-handshake "a.example")
+          (is (eql 42 byte))
+          (is-true client-psk "The ticket resumes under a.example")
+          (is (eq t server-psk)))
+        (multiple-value-bind (client-psk server-psk byte) (%loopback-handshake "A.Example")
+          (is (eql 42 byte))
+          (is-true client-psk "The ticket resumes under A.Example")
+          (is (eq t server-psk)))
+        (multiple-value-bind (client-psk server-psk byte) (%loopback-handshake "b.example")
+          (is (eql 42 byte) "The b.example connection completes")
+          (is (not client-psk) "The ticket does not resume under b.example")
+          (is (eq nil server-psk)))))))
+
 (defun run-handshake-tests ()
   "Run all handshake tests."
   (run! 'handshake-tests))

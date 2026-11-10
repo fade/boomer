@@ -248,10 +248,38 @@
           (ash (aref data (+ offset 6)) 8)
           (aref data (+ offset 7))))
 
-(defun encrypt-session-ticket (resumption-master-secret cipher-suite nonce creation-time)
+(defun session-ticket-server-name-octets (hostname)
+  "Return HOSTNAME as the octets a session ticket is bound to.
+   ASCII letters are lowercased, since DNS host names compare case-insensitively;
+   other characters are kept as they are and encoded as UTF-8.  A NIL HOSTNAME
+   (no SNI) gives an empty vector."
+  (if hostname
+      (string-to-octets
+       (map 'string (lambda (c)
+                      (if (char<= #\A c #\Z) (char-downcase c) c))
+            hostname))
+      (make-octet-vector 0)))
+
+(defun session-ticket-aad (age-add lifetime hostname)
+  "Return the additional authenticated data for a session ticket:
+   age_add (4) || lifetime (4) || name_len (2) || name, all big-endian.
+   NAME is SESSION-TICKET-SERVER-NAME-OCTETS of HOSTNAME, empty without SNI.
+   Authenticating these binds the ticket to the server name it was issued for
+   and to the clear age_add and lifetime that precede it on the wire."
+  (let ((name (session-ticket-server-name-octets hostname)))
+    (concat-octet-vectors
+     (encode-uint32-be age-add)
+     (encode-uint32-be lifetime)
+     (octet-vector (ldb (byte 8 8) (length name)) (ldb (byte 8 0) (length name)))
+     name)))
+
+(defun encrypt-session-ticket (resumption-master-secret cipher-suite nonce creation-time
+                               &key (aad (make-octet-vector 0)))
   "Encrypt session state into an opaque ticket.
    Returns the encrypted ticket bytes suitable for sending to client.
-   Format: iv (12 bytes) || ciphertext || tag (16 bytes)"
+   Format: iv (12 bytes) || ciphertext || tag (16 bytes)
+   AAD is authenticated but not encrypted; DECRYPT-SESSION-TICKET must be given
+   the same octets.  See SESSION-TICKET-AAD."
   (let* ((key (ensure-server-ticket-key))
          (iv (random-bytes 12))
          ;; Plaintext: resumption_master_secret (32/48) || cipher_suite (2) || nonce_len (1) || nonce (var) || creation_time (8)
@@ -266,16 +294,16 @@
     (replace plaintext nonce :start1 (+ rms-len 3))
     (let ((time-bytes (encode-uint64-be creation-time)))
       (replace plaintext time-bytes :start1 (+ rms-len 3 nonce-len)))
-    ;; Encrypt with AES-256-GCM using empty AAD
     ;; aes-gcm-encrypt returns ciphertext || tag
-    (let ((encrypted (aes-gcm-encrypt key iv plaintext (make-octet-vector 0))))
+    (let ((encrypted (aes-gcm-encrypt key iv plaintext aad)))
       ;; Return: iv || encrypted (which is ciphertext || tag)
       (concat-octet-vectors iv encrypted))))
 
-(defun decrypt-session-ticket (encrypted-ticket)
+(defun decrypt-session-ticket (encrypted-ticket &key (aad (make-octet-vector 0)))
   "Decrypt an encrypted session ticket.
    Returns (VALUES resumption-master-secret cipher-suite nonce creation-time) on success,
-   or NIL if decryption fails."
+   or NIL if decryption fails, including when AAD differs from the AAD the
+   ticket was encrypted with."
   (when (< (length encrypted-ticket) 28) ; 12 iv + 0 min plaintext + 16 tag
     (return-from decrypt-session-ticket nil))
   (let* ((key (ensure-server-ticket-key))
@@ -283,7 +311,7 @@
          ;; ciphertext-with-tag is everything after the iv
          (ciphertext-with-tag (subseq encrypted-ticket 12)))
     (handler-case
-        (let ((plaintext (aes-gcm-decrypt key iv ciphertext-with-tag (make-octet-vector 0))))
+        (let ((plaintext (aes-gcm-decrypt key iv ciphertext-with-tag aad)))
           (when plaintext
             ;; Parse the plaintext
             ;; The RMS length depends on cipher suite - we'll detect from remaining size

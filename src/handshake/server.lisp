@@ -92,8 +92,11 @@
 (defun try-accept-psk (hs psk-ext raw-client-hello cipher-suite)
   "Try to accept a PSK from the client's pre_shared_key extension.
    Returns (VALUES psk selected-index) if a valid PSK is found, NIL otherwise.
-   RAW-CLIENT-HELLO must be the complete ClientHello message bytes."
-  (declare (ignore hs))  ; HS reserved for future use (e.g., custom ticket decryption)
+   RAW-CLIENT-HELLO must be the complete ClientHello message bytes.
+   A ticket is accepted only under the SNI it was issued for
+   (SERVER-HANDSHAKE-CLIENT-HOSTNAME of HS) and with the age_add and lifetime
+   it was issued with; any other ticket is skipped, which leaves the caller to
+   complete a full handshake."
   (let* ((identities (pre-shared-key-ext-identities psk-ext))
          (binders (pre-shared-key-ext-binders psk-ext)))
     (hs-log "~&[HS] try-accept-psk: ~D identities, cipher-suite=~D~%"
@@ -113,7 +116,10 @@
                         (encrypted-data (subseq ticket-data 8)))
                    (multiple-value-bind (resumption-master-secret ticket-cipher-suite
                                          nonce creation-time)
-                       (decrypt-session-ticket encrypted-data)
+                       (decrypt-session-ticket
+                        encrypted-data
+                        :aad (session-ticket-aad stored-age-add stored-lifetime
+                                                 (server-handshake-client-hostname hs)))
                      (hs-log "~&[HS] try-accept-psk: decrypt=~A cipher-match=~A age-valid=~A~%"
                              (and resumption-master-secret t)
                              (and resumption-master-secret
@@ -898,17 +904,20 @@
          (nonce-counter (server-handshake-ticket-nonce-counter hs))
          (nonce (octet-vector (ldb (byte 8 0) nonce-counter)))
          (creation-time (get-internal-real-time))
-         ;; Encrypt session state into ticket
+         ;; Encrypt session state into ticket, authenticating the clear
+         ;; age_add and lifetime and the SNI of this connection
          (ticket-data (encrypt-session-ticket
                        resumption-master-secret
                        cipher-suite
                        nonce
-                       creation-time)))
+                       creation-time
+                       :aad (session-ticket-aad age-add ticket-lifetime
+                                                (server-handshake-client-hostname hs)))))
     ;; Increment nonce counter for next ticket
     (incf (server-handshake-ticket-nonce-counter hs))
     ;; Create the NewSessionTicket structure
-    ;; We also include the age-add in the ticket for later validation
-    ;; by prepending it to the encrypted ticket data
+    ;; Prepend age_add and lifetime in the clear for validation on resumption;
+    ;; the AAD above authenticates both
     (let ((full-ticket (concat-octet-vectors
                         (encode-uint32-be age-add)
                         (encode-uint32-be ticket-lifetime)

@@ -44,16 +44,42 @@
 
 ;;;; DER Parsing
 
-(defun parse-der (data)
-  "Parse DER-encoded data into an ASN1-NODE tree.
-   DATA should be an octet vector."
-  (let ((buf (make-tls-buffer data)))
-    (parse-der-node buf)))
+(defconstant +der-max-depth+ 64
+  "Deepest constructed nesting PARSE-DER accepts.")
 
-(defun parse-der-node (buf)
-  "Parse a single DER node from the buffer."
+(defconstant +der-max-length-octets+ 4
+  "Most long-form length octets PARSE-DER accepts.")
+
+(defconstant +der-max-tag-octets+ 4
+  "Most long-form tag octets PARSE-DER accepts; four keep the tag a fixnum.")
+
+(defun parse-der (data)
+  "Parse DATA, an octet vector holding exactly one DER encoding, into an ASN1-NODE tree.
+Signals TLS-DECODE-ERROR when DATA is empty, when any octet follows the
+top-level node, or on any malformed input PARSE-DER-NODE rejects."
+  (let ((buf (make-tls-buffer data)))
+    (when (zerop (buffer-remaining buf))
+      (error 'tls-decode-error :message "DER input is empty"))
+    (let ((node (parse-der-node buf)))
+      (unless (zerop (buffer-remaining buf))
+        (error 'tls-decode-error
+               :message (format nil "~D trailing octet~:P after the top-level DER node"
+                                (buffer-remaining buf))))
+      node)))
+
+(defun parse-der-node (buf &optional (depth 0) (limit (length (tls-buffer-data buf))))
+  "Parse one DER node from BUF and return an ASN1-NODE, or NIL when BUF is empty.
+DEPTH is the nesting level of the node. LIMIT is the buffer position the node
+must end at or before. Signals TLS-DECODE-ERROR on malformed input:
+  - a declared length that runs past LIMIT;
+  - nesting deeper than +DER-MAX-DEPTH+;
+  - a tag or length field longer than its cap;
+  - a primitive value that cannot be decoded."
   (when (zerop (buffer-remaining buf))
     (return-from parse-der-node nil))
+  (when (> depth +der-max-depth+)
+    (error 'tls-decode-error
+           :message (format nil "DER nesting deeper than ~D levels" +der-max-depth+)))
   (let* ((start-pos (tls-buffer-position buf))
          ;; Parse identifier octet
          (id-byte (buffer-read-octet buf))
@@ -63,18 +89,27 @@
     ;; Handle long-form tags
     (when (= tag 31)
       (setf tag 0)
-      (loop for b = (buffer-read-octet buf)
-            do (setf tag (logior (ash tag 7) (logand b #x7f)))
+      (loop for count from 1
+            for b = (buffer-read-octet buf)
+            do (when (> count +der-max-tag-octets+)
+                 (error 'tls-decode-error
+                        :message (format nil "DER tag has more than ~D long-form octets"
+                                         +der-max-tag-octets+)))
+               (setf tag (logior (ash tag 7) (logand b #x7f)))
             while (logbitp 7 b)))
     ;; Parse length
-    (let ((length (parse-der-length buf)))
+    (let ((length (parse-der-length buf))
+          (available (- limit (tls-buffer-position buf))))
       (when (null length)
         (error 'tls-decode-error :message "Indefinite length not supported in DER"))
+      (when (> length available)
+        (error 'tls-decode-error
+               :message (format nil "DER length ~D exceeds the ~D octets available"
+                                length (max 0 available))))
       ;; Parse value
-      (let* ((value-start (tls-buffer-position buf))
-             (value (if constructed
+      (let* ((value (if constructed
                         ;; Parse contained elements
-                        (parse-der-contents buf length)
+                        (parse-der-contents buf length depth)
                         ;; Primitive: read raw bytes
                         (buffer-read-octets buf length)))
              (end-pos (tls-buffer-position buf))
@@ -84,11 +119,13 @@
                         :tag tag
                         :value (if constructed
                                    value
-                                   (decode-primitive-value class tag value))
+                                   (decode-der-primitive-checked class tag value))
                         :raw-bytes raw)))))
 
 (defun parse-der-length (buf)
-  "Parse DER length field. Returns nil for indefinite length."
+  "Parse DER length field. Returns nil for indefinite length.
+Signals TLS-DECODE-ERROR when the long form uses more than
++DER-MAX-LENGTH-OCTETS+ length octets."
   (let ((first-byte (buffer-read-octet buf)))
     (cond
       ;; Short form: length < 128
@@ -101,17 +138,38 @@
       (t
        (let ((num-octets (logand first-byte #x7f))
              (length 0))
+         (when (> num-octets +der-max-length-octets+)
+           (error 'tls-decode-error
+                  :message (format nil "DER length has more than ~D long-form octets"
+                                   +der-max-length-octets+)))
          (dotimes (i num-octets)
            (setf length (logior (ash length 8) (buffer-read-octet buf))))
          length)))))
 
-(defun parse-der-contents (buf length)
-  "Parse the contents of a constructed type."
+(defun parse-der-contents (buf length &optional (depth 0))
+  "Parse the LENGTH content octets of a constructed node at DEPTH.
+Return the list of child nodes. Signals TLS-DECODE-ERROR when a child
+consumes no octets."
   (let ((end-pos (+ (tls-buffer-position buf) length))
         (nodes nil))
     (loop while (< (tls-buffer-position buf) end-pos)
-          do (push (parse-der-node buf) nodes))
+          do (let* ((before (tls-buffer-position buf))
+                    (node (parse-der-node buf (1+ depth) end-pos)))
+               (when (or (null node) (<= (tls-buffer-position buf) before))
+                 (error 'tls-decode-error
+                        :message "DER constructed contents made no progress"))
+               (push node nodes)))
     (nreverse nodes)))
+
+(defun decode-der-primitive-checked (class tag raw-bytes)
+  "Return DECODE-PRIMITIVE-VALUE of CLASS, TAG and RAW-BYTES.
+Any error that is not a TLS-ERROR is resignalled as TLS-DECODE-ERROR."
+  (handler-bind ((error (lambda (e)
+                          (unless (typep e 'tls-error)
+                            (error 'tls-decode-error
+                                   :message (format nil "Malformed DER value (tag ~D): ~A"
+                                                    tag e))))))
+    (decode-primitive-value class tag raw-bytes)))
 
 (defun decode-primitive-value (class tag raw-bytes)
   "Decode a primitive ASN.1 value."

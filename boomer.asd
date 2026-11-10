@@ -135,6 +135,7 @@
                              (:file "record-tests")
                              (:file "handshake-tests")
                              (:file "certificate-tests")
+                             (:file "der-bounds-tests")
                              (:file "trust-store-tests")
                              (:file "cancel-tests")
                              (:file "cancel-integration-tests")

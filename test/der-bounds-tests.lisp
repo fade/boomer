@@ -125,6 +125,27 @@
                                     #x01 #x00 body))
      "16-octet long-form tag")))
 
+(test der-empty-input-signals-decode-error
+  "An empty octet vector signals TLS-DECODE-ERROR rather than returning NIL."
+  (signals-decode-error-promptly
+   (boomer::parse-der (boomer::make-octet-vector 0))
+   "empty octet vector"))
+
+(test der-trailing-octets-signal-decode-error
+  "Octets after the top-level node signal TLS-DECODE-ERROR.
+The certificate case is test/certs/self-signed-valid.pem with one octet appended."
+  (signals-decode-error-promptly
+   (boomer::parse-der (der-octets #x05 #x00 #xFF))
+   "NULL node followed by FF")
+  (let* ((source "self-signed-valid.pem")
+         (der (boomer::pem-decode (boomer::read-file-bytes (test-cert-path source))
+                                  "CERTIFICATE")))
+    (is (typep (boomer::parse-der der) 'boomer::asn1-node)
+        "~A must parse before the octet is appended" source)
+    (signals-decode-error-promptly
+     (boomer::parse-der (der-octets der #x00))
+     (format nil "~A with one octet appended" source))))
+
 (defun make-der-fuzz-prng (seed)
   "Return a function of N yielding a deterministic integer in [0, N) seeded by SEED."
   (let ((state seed))

@@ -54,10 +54,18 @@
   "Most long-form tag octets PARSE-DER accepts; four keep the tag a fixnum.")
 
 (defun parse-der (data)
-  "Parse DER-encoded data into an ASN1-NODE tree.
-   DATA should be an octet vector."
+  "Parse DATA, an octet vector holding exactly one DER encoding, into an ASN1-NODE tree.
+Signals TLS-DECODE-ERROR when DATA is empty, when any octet follows the
+top-level node, or on any malformed input PARSE-DER-NODE rejects."
   (let ((buf (make-tls-buffer data)))
-    (parse-der-node buf)))
+    (when (zerop (buffer-remaining buf))
+      (error 'tls-decode-error :message "DER input is empty"))
+    (let ((node (parse-der-node buf)))
+      (unless (zerop (buffer-remaining buf))
+        (error 'tls-decode-error
+               :message (format nil "~D trailing octet~:P after the top-level DER node"
+                                (buffer-remaining buf))))
+      node)))
 
 (defun parse-der-node (buf &optional (depth 0) (limit (length (tls-buffer-data buf))))
   "Parse one DER node from BUF and return an ASN1-NODE, or NIL when BUF is empty.

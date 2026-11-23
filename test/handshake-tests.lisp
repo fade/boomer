@@ -999,6 +999,95 @@
           (is (not client-psk) "The ticket does not resume under b.example")
           (is (eq nil server-psk)))))))
 
+;;;; ClientHello summary on a failed server handshake
+;;;;
+;;;; A TLS 1.2-only ClientHello, recorded from
+;;;;   openssl s_client -tls1_2 -connect 127.0.0.1:<port> -servername mail.example.test
+;;;; (OpenSSL 4.1.0, 23 Oct 2026) as the first TLS record sent to a plain socket.
+;;;; The full record is 219 octets and carries no supported_versions extension.
+
+(defparameter *openssl-tls12-client-hello-record*
+  (hex-to-bytes
+   (concatenate 'string
+                "16030100d6010000d20303903afd6801855dd39fd48066dca8ad4a210a6573df"
+                "c9ee91b6f178d15c49ccff000036c02cc030009fcca9cca8ccaac02bc02f009e"
+                "c024c028006bc023c0270067c00ac0140039c009c0130033009d009c003d003c"
+                "0035002f01000073ff01000100000b00020100000a0010000e001d0017001e00"
+                "18001901000101002300000016000000170000000d002a002804030503060308"
+                "0708080809080a080b0804080508060401050106010303030103020402050206"
+                "020000001600140000116d61696c2e6578616d706c652e74657374"))
+  "TLS record holding the ClientHello from openssl s_client -tls1_2.")
+
+(defun %server-handshake-condition (record-octets)
+  "Run PERFORM-SERVER-HANDSHAKE over an in-memory transport that supplies
+   RECORD-OCTETS. Return the TLS-ERROR that escapes it, or NIL, and as a
+   second value the octets the server wrote."
+  (let* ((in (flexi-streams:make-in-memory-input-stream record-octets))
+         (out (flexi-streams:make-in-memory-output-stream))
+         (rl (boomer::make-record-layer (make-two-way-stream in out))))
+    (values (handler-case
+                (progn (boomer::perform-server-handshake
+                        rl (list (boomer::make-octet-vector 1)) nil)
+                       nil)
+              (boomer:tls-error (e) e))
+            (flexi-streams:get-output-stream-sequence out))))
+
+(test failed-server-handshake-carries-client-hello-summary
+  "A server handshake that fails on a TLS 1.2-only ClientHello signals a
+   TLS-HANDSHAKE-ERROR carrying the ClientHello summary and the state reached,
+   with no octet vector in any summary slot."
+  (let ((e (%server-handshake-condition *openssl-tls12-client-hello-record*)))
+    (is (typep e 'boomer:tls-handshake-error))
+    (when e
+      (is (search "supported_versions" (boomer::tls-error-message e)))
+      (is (equal "mail.example.test" (boomer:tls-error-client-server-name e)))
+      (is (eql #x0303 (boomer:tls-error-client-legacy-version e)))
+      (is (null (boomer:tls-error-client-supported-versions e)))
+      (is (equal '(#xC02C #xC030 #x009F #xCCA9 #xCCA8 #xCCAA #xC02B #xC02F #x009E
+                   #xC024 #xC028 #x006B #xC023 #xC027 #x0067 #xC00A #xC014 #x0039
+                   #xC009 #xC013 #x0033 #x009D #x009C #x003D #x003C #x0035 #x002F)
+                 (boomer:tls-error-client-cipher-suites e)))
+      (is (eq :wait-client-hello (boomer:tls-error-handshake-state e)))
+      (flet ((octets-p (x) (typep x '(vector (unsigned-byte 8)))))
+        (dolist (value (list (boomer:tls-error-client-server-name e)
+                             (boomer:tls-error-client-legacy-version e)
+                             (boomer:tls-error-client-supported-versions e)
+                             (boomer:tls-error-client-cipher-suites e)
+                             (boomer:tls-error-handshake-state e)))
+          (is (not (or (octets-p value)
+                       (and (listp value) (some #'octets-p value))))
+              "A summary slot holds an octet vector: ~S" value))))))
+
+(test unparsable-second-client-hello-reports-no-summary
+  "After a HelloRetryRequest, a second ClientHello that fails to parse signals
+   a TLS-ERROR whose CLIENT-* slots are NIL, not those of the first ClientHello,
+   with HANDSHAKE-STATE still set."
+  ;; Constructed input, not a capture: a TLS 1.3 ClientHello offering
+  ;; TLS_AES_128_GCM_SHA256 and x25519 with an empty key_share, which the
+  ;; server answers with a HelloRetryRequest, then a handshake record holding
+  ;; a ClientHello truncated after four body octets.
+  (let ((first-hello
+          (hex-to-bytes
+           (concatenate 'string
+                        "160301004c" "01000048" "0303"
+                        (make-string 64 :initial-element #\0)
+                        "00" "00021301" "0100" "001d"
+                        "002b0003020304" "000a00040002001d"
+                        "003300020000" "000d000400020807")))
+        (truncated-hello (hex-to-bytes "160303000801000004deadbeef")))
+    (multiple-value-bind (e sent)
+        (%server-handshake-condition
+         (concatenate '(vector (unsigned-byte 8)) first-hello truncated-hello))
+      (is-true (search boomer::+hello-retry-request-random+ sent)
+               "The server sent a HelloRetryRequest")
+      (is (typep e 'boomer:tls-decode-error))
+      (when e
+        (is (null (boomer:tls-error-client-server-name e)))
+        (is (null (boomer:tls-error-client-legacy-version e)))
+        (is (null (boomer:tls-error-client-supported-versions e)))
+        (is (null (boomer:tls-error-client-cipher-suites e)))
+        (is (eq :wait-client-hello (boomer:tls-error-handshake-state e)))))))
+
 (defun run-handshake-tests ()
   "Run all handshake tests."
   (run! 'handshake-tests))

@@ -77,6 +77,8 @@
   (hello-retry-sent nil :type boolean)  ; T if we've sent HRR
   (hrr-selected-group nil)              ; Group we requested in HRR
   (first-client-hello-hash nil :type (or null octet-vector))  ; Hash of CH1 for transcript
+  ;; Key-free summary of the latest ClientHello (see SUMMARIZE-CLIENT-HELLO)
+  (client-hello-summary nil :type list)
   ;; State machine state
   (state :start))
 
@@ -165,11 +167,39 @@
 
 ;;;; ClientHello Processing
 
+(defun summarize-client-hello (client-hello)
+  "Return a key-free plist summarizing CLIENT-HELLO, with these keys:
+     :SERVER-NAME         SNI host name, or NIL.
+     :LEGACY-VERSION      legacy_version.
+     :SUPPORTED-VERSIONS  supported_versions list, or NIL.
+     :CIPHER-SUITES       cipher suite codes, in wire order.
+   The plist excludes the random, session ID, key shares, and PSK identities
+   and binders.
+   An absent or malformed extension yields NIL for its key; signals nothing."
+  (flet ((extension-data (type)
+           (handler-case
+               (let ((ext (find-extension (client-hello-extensions client-hello) type)))
+                 (and (tls-extension-p ext) (tls-extension-data ext)))
+             (error () nil))))
+    (let ((sni (extension-data +extension-server-name+))
+          (versions (extension-data +extension-supported-versions+)))
+      (list :server-name (and (server-name-ext-p sni)
+                              (stringp (server-name-ext-host-name sni))
+                              (copy-seq (server-name-ext-host-name sni)))
+            :legacy-version (client-hello-legacy-version client-hello)
+            :supported-versions (and (supported-versions-ext-p versions)
+                                     (copy-list (supported-versions-ext-versions versions)))
+            :cipher-suites (copy-list (client-hello-cipher-suites client-hello))))))
+
 (defun process-client-hello (hs message raw-bytes)
   "Process a ClientHello message from the client."
   (hs-log "~&[HS] process-client-hello: starting~%")
   (let* ((client-hello (handshake-message-body message))
          (extensions (client-hello-extensions client-hello)))
+    ;; Record the summary before any check can signal; a second ClientHello
+    ;; after HelloRetryRequest replaces it.
+    (setf (server-handshake-client-hello-summary hs)
+          (summarize-client-hello client-hello))
     ;; Update transcript with ClientHello
     (server-handshake-update-transcript hs raw-bytes)
     ;; Store session ID for echo
@@ -1006,6 +1036,22 @@
     (apply #'format t format-string args)
     (force-output)))
 
+(defun annotate-server-handshake-error (condition hs)
+  "Copy the ClientHello summary and the current state of HS into the
+   client and handshake-state slots of CONDITION, a TLS-ERROR.
+   Fill only slots that are still NIL, so repeated calls on one condition
+   leave it unchanged. Return CONDITION."
+  (let ((summary (server-handshake-client-hello-summary hs)))
+    (flet ((fill-slot (slot value)
+             (when (and value (null (slot-value condition slot)))
+               (setf (slot-value condition slot) value))))
+      (fill-slot 'client-server-name (getf summary :server-name))
+      (fill-slot 'client-legacy-version (getf summary :legacy-version))
+      (fill-slot 'client-supported-versions (getf summary :supported-versions))
+      (fill-slot 'client-cipher-suites (getf summary :cipher-suites))
+      (fill-slot 'handshake-state (server-handshake-state hs))))
+  condition)
+
 (defun perform-server-handshake (record-layer certificate-chain private-key
                                   &key alpn-protocols verify-mode trust-store
                                        cipher-suites sni-callback certificate-provider)
@@ -1018,7 +1064,12 @@
 
    CERTIFICATE-PROVIDER, if provided, is called with (hostname alpn-list) before
    certificate selection. It should return (VALUES cert-chain key selected-alpn)
-   to override both certificate and ALPN selection. Useful for ACME TLS-ALPN-01."
+   to override both certificate and ALPN selection. Useful for ACME TLS-ALPN-01.
+
+   A TLS-ERROR that escapes keeps its type and identity, and carries a key-free
+   summary of the latest ClientHello and the handshake state reached, readable
+   with the TLS-ERROR-CLIENT-* readers and TLS-ERROR-HANDSHAKE-STATE. When the
+   ClientHello fails to parse, the summary readers return NIL."
   (hs-log "~&[HS] Starting server handshake~%")
   (let ((hs (make-server-handshake
              :record-layer record-layer
@@ -1033,107 +1084,113 @@
                                       +tls-aes-128-gcm-sha256+))
              :sni-callback sni-callback
              :certificate-provider certificate-provider)))
-    ;; State machine loop
-    (loop
-      ;; Check request context for deadline/cancellation
-      (let ((record-layer (server-handshake-record-layer hs)))
-        (when record-layer
-          (check-tls-context)))
-      (hs-log "~&[HS] State: ~A~%" (server-handshake-state hs))
-      (case (server-handshake-state hs)
-        (:start
-         (setf (server-handshake-state hs) :wait-client-hello))
+    ;; Annotate every escaping TLS-ERROR with the ClientHello summary and
+    ;; the state reached, then decline so the condition propagates unchanged.
+    (handler-bind ((tls-error (lambda (e) (annotate-server-handshake-error e hs))))
+      ;; State machine loop
+      (loop
+        ;; Check request context for deadline/cancellation
+        (let ((record-layer (server-handshake-record-layer hs)))
+          (when record-layer
+            (check-tls-context)))
+        (hs-log "~&[HS] State: ~A~%" (server-handshake-state hs))
+        (case (server-handshake-state hs)
+          (:start
+           (setf (server-handshake-state hs) :wait-client-hello))
 
-        (:wait-client-hello
-         (handler-case
-             (multiple-value-bind (message raw-bytes)
-                 (server-read-handshake-message hs)
-               (unless (= (handshake-message-type message) +handshake-client-hello+)
+          (:wait-client-hello
+           ;; Each ClientHello read starts from no summary, so a failure to
+           ;; parse a later one never reports an earlier one.
+           (setf (server-handshake-client-hello-summary hs) nil)
+           (handler-case
+               (multiple-value-bind (message raw-bytes)
+                   (server-read-handshake-message hs)
+                 (unless (= (handshake-message-type message) +handshake-client-hello+)
+                   (record-layer-write-alert (server-handshake-record-layer hs)
+                                             +alert-level-fatal+ +alert-unexpected-message+)
+                   (error 'tls-handshake-error
+                          :message ":UNEXPECTED_MESSAGE: Expected ClientHello"
+                          :state :wait-client-hello))
+                 (process-client-hello hs message raw-bytes))
+             ;; Catch decode errors and send decode_error alert
+             (tls-decode-error (e)
+               (ignore-errors
                  (record-layer-write-alert (server-handshake-record-layer hs)
-                                           +alert-level-fatal+ +alert-unexpected-message+)
-                 (error 'tls-handshake-error
-                        :message ":UNEXPECTED_MESSAGE: Expected ClientHello"
-                        :state :wait-client-hello))
-               (process-client-hello hs message raw-bytes))
-           ;; Catch decode errors and send decode_error alert
-           (tls-decode-error (e)
-             (ignore-errors
+                                           +alert-level-fatal+ +alert-decode-error+))
+               (error e))
+             ;; Catch extension parsing errors and send appropriate alert
+             (tls-handshake-error (e)
+               (let ((msg (tls-error-message e)))
+                 ;; Check for specific error types and send appropriate alerts
+                 (cond
+                   ((search ":DUPLICATE_KEY_SHARE:" msg)
+                    (record-layer-write-alert (server-handshake-record-layer hs)
+                                              +alert-level-fatal+ +alert-illegal-parameter+))
+                   ((search ":DUPLICATE_EXTENSION:" msg)
+                    (record-layer-write-alert (server-handshake-record-layer hs)
+                                              +alert-level-fatal+ +alert-illegal-parameter+)))
+                 (error e)))))
+
+          (:send-hello-retry-request
+           (send-hello-retry-request hs))
+
+          (:send-server-hello
+           (send-server-hello hs))
+
+          (:send-encrypted-extensions
+           (send-encrypted-extensions hs))
+
+          (:send-certificate-request
+           (send-certificate-request hs))
+
+          (:send-certificate
+           (send-certificate hs))
+
+          (:send-certificate-verify
+           (send-certificate-verify hs))
+
+          (:send-finished
+           (send-server-finished hs))
+
+          (:wait-client-certificate
+           (multiple-value-bind (message raw-bytes)
+               (server-read-handshake-message hs)
+             (unless (= (handshake-message-type message) +handshake-certificate+)
                (record-layer-write-alert (server-handshake-record-layer hs)
-                                         +alert-level-fatal+ +alert-decode-error+))
-             (error e))
-           ;; Catch extension parsing errors and send appropriate alert
-           (tls-handshake-error (e)
-             (let ((msg (tls-error-message e)))
-               ;; Check for specific error types and send appropriate alerts
-               (cond
-                 ((search ":DUPLICATE_KEY_SHARE:" msg)
-                  (record-layer-write-alert (server-handshake-record-layer hs)
-                                            +alert-level-fatal+ +alert-illegal-parameter+))
-                 ((search ":DUPLICATE_EXTENSION:" msg)
-                  (record-layer-write-alert (server-handshake-record-layer hs)
-                                            +alert-level-fatal+ +alert-illegal-parameter+)))
-               (error e)))))
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":UNEXPECTED_MESSAGE: Expected client Certificate"
+                      :state :wait-client-certificate))
+             (process-client-certificate hs message raw-bytes)))
 
-        (:send-hello-retry-request
-         (send-hello-retry-request hs))
+          (:wait-client-certificate-verify
+           (multiple-value-bind (message raw-bytes)
+               (server-read-handshake-message hs)
+             (unless (= (handshake-message-type message) +handshake-certificate-verify+)
+               (record-layer-write-alert (server-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":UNEXPECTED_MESSAGE: Expected client CertificateVerify"
+                      :state :wait-client-certificate-verify))
+             (process-client-certificate-verify hs message raw-bytes)))
 
-        (:send-server-hello
-         (send-server-hello hs))
+          (:wait-client-finished
+           (multiple-value-bind (message raw-bytes)
+               (server-read-handshake-message hs)
+             (unless (= (handshake-message-type message) +handshake-finished+)
+               (record-layer-write-alert (server-handshake-record-layer hs)
+                                         +alert-level-fatal+ +alert-unexpected-message+)
+               (error 'tls-handshake-error
+                      :message ":UNEXPECTED_MESSAGE: Expected client Finished"
+                      :state :wait-client-finished))
+             (process-client-finished hs message raw-bytes)))
 
-        (:send-encrypted-extensions
-         (send-encrypted-extensions hs))
+          (:connected
+           ;; Send NewSessionTicket for session resumption
+           (send-new-session-ticket hs)
+           (return hs))
 
-        (:send-certificate-request
-         (send-certificate-request hs))
-
-        (:send-certificate
-         (send-certificate hs))
-
-        (:send-certificate-verify
-         (send-certificate-verify hs))
-
-        (:send-finished
-         (send-server-finished hs))
-
-        (:wait-client-certificate
-         (multiple-value-bind (message raw-bytes)
-             (server-read-handshake-message hs)
-           (unless (= (handshake-message-type message) +handshake-certificate+)
-             (record-layer-write-alert (server-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":UNEXPECTED_MESSAGE: Expected client Certificate"
-                    :state :wait-client-certificate))
-           (process-client-certificate hs message raw-bytes)))
-
-        (:wait-client-certificate-verify
-         (multiple-value-bind (message raw-bytes)
-             (server-read-handshake-message hs)
-           (unless (= (handshake-message-type message) +handshake-certificate-verify+)
-             (record-layer-write-alert (server-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":UNEXPECTED_MESSAGE: Expected client CertificateVerify"
-                    :state :wait-client-certificate-verify))
-           (process-client-certificate-verify hs message raw-bytes)))
-
-        (:wait-client-finished
-         (multiple-value-bind (message raw-bytes)
-             (server-read-handshake-message hs)
-           (unless (= (handshake-message-type message) +handshake-finished+)
-             (record-layer-write-alert (server-handshake-record-layer hs)
-                                       +alert-level-fatal+ +alert-unexpected-message+)
-             (error 'tls-handshake-error
-                    :message ":UNEXPECTED_MESSAGE: Expected client Finished"
-                    :state :wait-client-finished))
-           (process-client-finished hs message raw-bytes)))
-
-        (:connected
-         ;; Send NewSessionTicket for session resumption
-         (send-new-session-ticket hs)
-         (return hs))
-
-        (otherwise
-         (error 'tls-handshake-error
-                :message (format nil "Unknown state: ~A" (server-handshake-state hs))
-                :state (server-handshake-state hs)))))))
+          (otherwise
+           (error 'tls-handshake-error
+                  :message (format nil "Unknown state: ~A" (server-handshake-state hs))
+                  :state (server-handshake-state hs))))))))

@@ -192,6 +192,25 @@
                      (tls-error-message condition))))
   (:documentation "Error decoding TLS data"))
 
+(define-condition tls-incomplete-record-error (tls-decode-error)
+  ((part :initarg :part
+         :initform nil
+         :reader tls-incomplete-record-error-part)
+   (expected :initarg :expected
+             :initform nil
+             :reader tls-incomplete-record-error-expected)
+   (received :initarg :received
+             :initform nil
+             :reader tls-incomplete-record-error-received))
+  (:documentation "Signalled when the transport reaches end of file partway through a
+   TLS record.
+
+   PART is :HEADER when fewer than five header octets arrive, or :FRAGMENT when
+   fewer fragment octets arrive than the header announces.  EXPECTED is the
+   octet count that PART requires; RECEIVED is the count read before end of
+   file.  End of file before any header octet signals TLS-CONNECTION-CLOSED
+   instead."))
+
 ;;;; Record Layer Errors
 
 (define-condition tls-record-error (tls-error)

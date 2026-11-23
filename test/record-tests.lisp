@@ -1137,6 +1137,44 @@
     (is (boomer:tls-stream-spent-p stream)
         "and the stream is still spent after the attempt")))
 
+;;;; A record cut short by end of file
+
+(defun %incomplete-record-condition (octets)
+  "Read one record from an input stream holding OCTETS. Return the TLS-ERROR
+   signalled, or NIL."
+  (handler-case
+      (progn (boomer::read-tls-record (flexi-streams:make-in-memory-input-stream octets))
+             nil)
+    (boomer:tls-error (e) e)))
+
+(test short-record-header-signals-incomplete-record-error
+  "Three header octets then end of file signal TLS-INCOMPLETE-RECORD-ERROR,
+   a TLS-DECODE-ERROR, with PART :HEADER, EXPECTED 5, and RECEIVED 3."
+  (let ((e (%incomplete-record-condition (subseq (record-octets 23 #(1 2 3 4)) 0 3))))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :header (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 5 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 3 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Incomplete record header" (boomer:tls-error-message e))))))
+
+(test short-record-fragment-signals-incomplete-record-error
+  "A header announcing 10 fragment octets followed by 4 signals
+   TLS-INCOMPLETE-RECORD-ERROR, a TLS-DECODE-ERROR, with PART :FRAGMENT,
+   EXPECTED 10, and RECEIVED 4."
+  (let ((e (%incomplete-record-condition
+            (subseq (record-octets 23 (boomer::make-octet-vector 10)) 0 9))))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :fragment (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 10 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 4 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Incomplete record fragment" (boomer:tls-error-message e))))))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

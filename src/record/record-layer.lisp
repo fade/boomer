@@ -1094,13 +1094,18 @@
   (setf (record-layer-in-eof layer) t)
   (when (record-layer-input-pending-p layer)
     (let ((body-phase (eq (record-layer-in-phase layer) :body)))
-      (error 'tls-decode-error
+      (error 'tls-incomplete-record-error
              :message (format nil "Truncated record: transport closed with ~D octet~:P of the ~A outstanding"
                               (if body-phase
                                   (- (record-layer-in-length layer)
                                      (record-layer-in-body-filled layer))
                                   (- 5 (record-layer-in-header-seen layer)))
-                              (if body-phase "body" "header")))))
+                              (if body-phase "body" "header"))
+             :part (if body-phase :fragment :header)
+             :expected (if body-phase (record-layer-in-length layer) 5)
+             :received (if body-phase
+                           (record-layer-in-body-filled layer)
+                           (record-layer-in-header-seen layer)))))
   (values))
 
 ;;;; Alert Processing

@@ -208,8 +208,9 @@
    PART is :HEADER when fewer than five header octets arrive, or :FRAGMENT when
    fewer fragment octets arrive than the header announces.  EXPECTED is the
    octet count that PART requires; RECEIVED is the count read before end of
-   file.  End of file before any header octet signals TLS-CONNECTION-CLOSED
-   instead."))
+   file.  Applies to blocking reads and to fed input.  End of file before any
+   header octet signals TLS-CONNECTION-CLOSED on a blocking read and nothing on
+   fed input."))
 
 ;;;; Record Layer Errors
 

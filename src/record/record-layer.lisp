@@ -70,9 +70,12 @@
       (when (zerop bytes-read)
         (error 'tls-connection-closed :clean nil))
       (when (< bytes-read 5)
-        (error 'tls-decode-error
+        (error 'tls-incomplete-record-error
                :message (format nil "Incomplete record header: expected 5 bytes, got ~D"
-                                bytes-read))))
+                                bytes-read)
+               :part :header
+               :expected 5
+               :received bytes-read)))
     ;; Parse header
     (let* ((content-type (aref header 0))
            (version (decode-uint16 header 1))
@@ -101,9 +104,12 @@
         (let ((bytes-read (read-exact-bytes stream read-buffer length request-context)))
           (declare (type fixnum bytes-read))
           (when (< bytes-read length)
-            (error 'tls-decode-error
+            (error 'tls-incomplete-record-error
                    :message (format nil "Incomplete record fragment: expected ~D bytes, got ~D"
-                                    length bytes-read))))
+                                    length bytes-read)
+                   :part :fragment
+                   :expected length
+                   :received bytes-read)))
         ;; Copy exact-size fragment from pool buffer.  The pool buffer
         ;; stays on the context list and is recycled on scope exit.
         (let ((fragment (make-octet-vector length)))
@@ -1088,13 +1094,18 @@
   (setf (record-layer-in-eof layer) t)
   (when (record-layer-input-pending-p layer)
     (let ((body-phase (eq (record-layer-in-phase layer) :body)))
-      (error 'tls-decode-error
+      (error 'tls-incomplete-record-error
              :message (format nil "Truncated record: transport closed with ~D octet~:P of the ~A outstanding"
                               (if body-phase
                                   (- (record-layer-in-length layer)
                                      (record-layer-in-body-filled layer))
                                   (- 5 (record-layer-in-header-seen layer)))
-                              (if body-phase "body" "header")))))
+                              (if body-phase "body" "header"))
+             :part (if body-phase :fragment :header)
+             :expected (if body-phase (record-layer-in-length layer) 5)
+             :received (if body-phase
+                           (record-layer-in-body-filled layer)
+                           (record-layer-in-header-seen layer)))))
   (values))
 
 ;;;; Alert Processing

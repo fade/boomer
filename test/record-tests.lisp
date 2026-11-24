@@ -1137,6 +1137,81 @@
     (is (boomer:tls-stream-spent-p stream)
         "and the stream is still spent after the attempt")))
 
+;;;; A record cut short by end of file
+
+(defun %incomplete-record-condition (octets)
+  "Read one record from an input stream holding OCTETS. Return the TLS-ERROR
+   signalled, or NIL."
+  (handler-case
+      (progn (boomer::read-tls-record (flexi-streams:make-in-memory-input-stream octets))
+             nil)
+    (boomer:tls-error (e) e)))
+
+(test short-record-header-signals-incomplete-record-error
+  "Three header octets then end of file signal TLS-INCOMPLETE-RECORD-ERROR,
+   a TLS-DECODE-ERROR, with PART :HEADER, EXPECTED 5, and RECEIVED 3."
+  (let ((e (%incomplete-record-condition (subseq (record-octets 23 #(1 2 3 4)) 0 3))))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :header (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 5 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 3 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Incomplete record header" (boomer:tls-error-message e))))))
+
+(test short-record-fragment-signals-incomplete-record-error
+  "A header announcing 10 fragment octets followed by 4 signals
+   TLS-INCOMPLETE-RECORD-ERROR, a TLS-DECODE-ERROR, with PART :FRAGMENT,
+   EXPECTED 10, and RECEIVED 4."
+  (let ((e (%incomplete-record-condition
+            (subseq (record-octets 23 (boomer::make-octet-vector 10)) 0 9))))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :fragment (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 10 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 4 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Incomplete record fragment" (boomer:tls-error-message e))))))
+
+(defun %fed-record-eof-condition (octets end)
+  "Feed the first END of OCTETS to an inbound layer, then note transport end of
+   file. Return the TLS-ERROR signalled, or NIL."
+  (let ((layer (inbound-layer)))
+    (boomer::record-layer-feed-ciphertext layer octets :start 0 :end end)
+    (handler-case (progn (boomer::record-layer-note-transport-eof layer) nil)
+      (boomer:tls-error (e) e))))
+
+(test fed-record-cut-in-header-signals-incomplete-record-error
+  "Two fed header octets then end of file signal TLS-INCOMPLETE-RECORD-ERROR,
+   a TLS-DECODE-ERROR, with PART :HEADER, EXPECTED 5, and RECEIVED 2."
+  (let ((e (%fed-record-eof-condition
+            (record-octets boomer::+content-type-handshake+ (counting-payload 9)) 2)))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :header (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 5 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 2 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Truncated record" (boomer:tls-error-message e))))))
+
+(test fed-record-cut-in-body-signals-incomplete-record-error
+  "A fed header announcing 9 body octets, 4 of them fed, then end of file
+   signal TLS-INCOMPLETE-RECORD-ERROR, a TLS-DECODE-ERROR, with PART :FRAGMENT,
+   EXPECTED 9, and RECEIVED 4."
+  (let ((e (%fed-record-eof-condition
+            (record-octets boomer::+content-type-handshake+ (counting-payload 9)) 9)))
+    (is (typep e 'boomer:tls-incomplete-record-error))
+    (is (typep e 'boomer:tls-decode-error))
+    (when (typep e 'boomer:tls-incomplete-record-error)
+      (is (eq :fragment (boomer:tls-incomplete-record-error-part e)))
+      (is (eql 9 (boomer:tls-incomplete-record-error-expected e)))
+      (is (eql 4 (boomer:tls-incomplete-record-error-received e))))
+    (when e
+      (is (search "Truncated record" (boomer:tls-error-message e))))))
+
 (defun run-record-tests ()
   "Run all record layer tests."
   (run! 'record-tests))

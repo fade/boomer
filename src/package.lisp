@@ -77,6 +77,13 @@
    #:tls-verification-error
    #:tls-alert-error
    #:tls-decode-error
+   #:tls-incomplete-record-error
+   #:tls-incomplete-record-error-part
+   #:tls-incomplete-record-error-expected
+   #:tls-incomplete-record-error-received
+   #:tls-error-message
+   #:tls-connection-closed
+   #:tls-connection-closed-clean-p
    #:tls-record-overflow
    #:tls-context-cancelled
    #:tls-deadline-exceeded

@@ -67,6 +67,11 @@
 
    ;; Conditions
    #:tls-error
+   #:tls-error-client-server-name
+   #:tls-error-client-legacy-version
+   #:tls-error-client-supported-versions
+   #:tls-error-client-cipher-suites
+   #:tls-error-handshake-state
    #:tls-handshake-error
    #:tls-certificate-error
    #:tls-verification-error

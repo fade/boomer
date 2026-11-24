@@ -11,11 +11,38 @@
 (define-condition tls-error (error)
   ((message :initarg :message
             :initform nil
-            :reader tls-error-message))
+            :reader tls-error-message)
+   (client-server-name :initarg :client-server-name
+                       :initform nil
+                       :reader tls-error-client-server-name)
+   (client-legacy-version :initarg :client-legacy-version
+                          :initform nil
+                          :reader tls-error-client-legacy-version)
+   (client-supported-versions :initarg :client-supported-versions
+                              :initform nil
+                              :reader tls-error-client-supported-versions)
+   (client-cipher-suites :initarg :client-cipher-suites
+                         :initform nil
+                         :reader tls-error-client-cipher-suites)
+   (handshake-state :initarg :handshake-state
+                    :initform nil
+                    :reader tls-error-handshake-state))
   (:report (lambda (condition stream)
              (format stream "TLS error~@[: ~A~]"
                      (tls-error-message condition))))
-  (:documentation "Base condition for all TLS errors"))
+  (:documentation "Base condition for all TLS errors.
+
+   On a condition that escapes PERFORM-SERVER-HANDSHAKE, these slots describe
+   the failed handshake; elsewhere they are NIL:
+     CLIENT-SERVER-NAME         SNI host name from the latest ClientHello.
+     CLIENT-LEGACY-VERSION      legacy_version from the latest ClientHello.
+     CLIENT-SUPPORTED-VERSIONS  supported_versions list, or NIL when the
+                                extension is absent or unparsable.
+     CLIENT-CIPHER-SUITES       cipher suite codes, in wire order.
+     HANDSHAKE-STATE            server handshake state at the failure.
+   The CLIENT-* slots hold no key material: no random, session ID, key share,
+   PSK identity, or binder. When the ClientHello fails to parse, the CLIENT-*
+   slots stay NIL and HANDSHAKE-STATE is still set."))
 
 ;;;; Handshake Errors
 
